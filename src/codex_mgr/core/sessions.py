@@ -1,126 +1,226 @@
-"""Session catalog, indexer, and search engine.
-
-Parses ~/.codex/session_index.jsonl and locates rollout files with human-friendly
-thread names, relative timestamps, and provider origin badges.
-"""
+"""Offline session discovery with explicit identity and ambiguity checks."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
 
-from codex_mgr.core.bridge import inspect_session_provider
-from codex_mgr.utils.paths import get_session_index_path, get_sessions_dir
+from codex_mgr.core.rollouts import (
+    canonical_session_id,
+    read_session_metadata,
+)
+from codex_mgr.utils.paths import get_codex_home, get_session_index_path, get_sessions_dir
+
+
+class AmbiguousSessionError(ValueError):
+    pass
 
 
 @dataclass
 class SessionItem:
-    """Represents an indexed Codex conversation session."""
-
     id: str
     thread_name: str
     updated_at: str
     relative_time: str
-    rollout_path: Optional[Path]
+    rollout_path: Path | None
     origin_provider: str
+    cwd: str | None = None
+    archived: bool = False
+    duplicate_paths: tuple[Path, ...] = ()
+
+    def require_rollout(self) -> Path:
+        if self.duplicate_paths:
+            raise AmbiguousSessionError(
+                "Multiple rollout files have this UUID. Resolve the duplicate before resuming or restoring."
+            )
+        if self.rollout_path is None:
+            raise FileNotFoundError("The indexed session has no readable rollout file.")
+        return self.rollout_path
+
+
+@dataclass
+class SessionCatalog:
+    sessions: list[SessionItem] = field(default_factory=list)
+    skipped_rollouts: int = 0
+    skipped_index_records: int = 0
+    unreadable_sources: int = 0
+
+
+def _timestamp(value: object) -> float:
+    if not isinstance(value, str):
+        return 0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return 0
 
 
 def format_relative_time(iso_str: str) -> str:
-    """Convert an ISO timestamp into human-readable relative time (e.g. '2 hours ago')."""
+    stamp = _timestamp(iso_str)
+    if not stamp:
+        return "Unknown"
+    seconds = max(0, int(datetime.now(timezone.utc).timestamp() - stamp))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    if seconds < 604800:
+        return f"{seconds // 86400}d ago"
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime("%b %d, %Y")
+
+
+def _workspace_key(value: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(str(Path(value).expanduser().resolve())))
+
+
+def discover_sessions(*, include_archived: bool = False) -> SessionCatalog:
+    """Read titles from the index and identities/workspaces from rollout headers.
+
+    Index corruption does not hide unindexed rollout files. Invalid headers are
+    counted rather than guessed, and duplicate UUID paths remain nonmutable.
+    """
+    catalog = SessionCatalog()
+    index: dict[str, dict] = {}
     try:
-        clean_iso = iso_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_iso)
-        now = datetime.now(timezone.utc)
-        diff = now - dt
+        with get_session_index_path().open("r", encoding="utf-8-sig") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if not isinstance(entry, dict):
+                        raise TypeError
+                    sid = canonical_session_id(entry.get("id"))
+                    if sid not in index or _timestamp(entry.get("updated_at")) >= _timestamp(
+                        index[sid].get("updated_at")
+                    ):
+                        index[sid] = entry
+                except (ValueError, TypeError):
+                    catalog.skipped_index_records += 1
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        catalog.unreadable_sources += 1
+    roots = [(get_sessions_dir(), False)]
+    if include_archived:
+        roots.append((get_codex_home() / "archived_sessions", True))
+    found: dict[str, SessionItem] = {}
+    seen_paths: set[Path] = set()
+    for root, archived in roots:
+        if not root.exists():
+            continue
+        for candidate in root.rglob("rollout-*.jsonl"):
+            path = candidate.resolve()
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            try:
+                # Do not follow a link into a different workspace/private tree.
+                path.relative_to(root.resolve())
+                meta = read_session_metadata(path)
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except (OSError, ValueError):
+                catalog.skipped_rollouts += 1
+                continue
+            entry = index.get(meta.id, {})
+            updated = max((stamp, entry.get("updated_at"), meta.timestamp), key=_timestamp)
+            title = entry.get("thread_name")
+            if not isinstance(title, str) or not title.strip():
+                title = "Untitled session"
+            item = SessionItem(
+                meta.id,
+                title,
+                updated or "",
+                format_relative_time(updated or ""),
+                path,
+                meta.provider or "Unknown",
+                meta.cwd,
+                archived,
+            )
+            previous = found.get(meta.id)
+            if previous is not None:
+                paths = previous.duplicate_paths or (previous.rollout_path,)
+                if _timestamp(item.updated_at) > _timestamp(previous.updated_at):
+                    item.duplicate_paths = (*paths, path)
+                    found[meta.id] = item
+                else:
+                    previous.duplicate_paths = (*paths, path)
+            else:
+                found[meta.id] = item
+    # Retain index-only entries so a missing rollout is visible to the user.
+    for sid, entry in index.items():
+        if sid in found:
+            continue
+        title = entry.get("thread_name")
+        stamp = entry.get("updated_at")
+        found[sid] = SessionItem(
+            sid,
+            title if isinstance(title, str) and title else "Untitled session",
+            stamp if isinstance(stamp, str) else "",
+            format_relative_time(stamp),
+            None,
+            "Unknown",
+        )
+    catalog.sessions = sorted(
+        found.values(), key=lambda item: (_timestamp(item.updated_at), item.id), reverse=True
+    )
+    return catalog
 
-        seconds = int(diff.total_seconds())
-        if seconds < 60:
-            return "just now"
-        if seconds < 3600:
-            m = seconds // 60
-            return f"{m}m ago"
-        if seconds < 86400:
-            h = seconds // 3600
-            return f"{h}h ago"
-        if seconds < 604800:
-            d = seconds // 86400
-            return "yesterday" if d == 1 else f"{d}d ago"
-        return dt.strftime("%b %d, %Y")
-    except Exception:
-        return "recently"
+
+def filter_sessions(
+    sessions: list[SessionItem], *, search: str | None = None, workspace: str | Path | None = None
+) -> list[SessionItem]:
+    query = (search or "").strip().casefold()
+    directory = _workspace_key(workspace) if workspace is not None else None
+    return [
+        item
+        for item in sessions
+        if (not query or query in item.id.casefold() or query in item.thread_name.casefold())
+        and (directory is None or (item.cwd is not None and _workspace_key(item.cwd) == directory))
+    ]
 
 
-def list_sessions(limit: int = 50) -> List[SessionItem]:
-    """List recorded Codex sessions sorted by most recently updated."""
-    index_path = get_session_index_path()
-    sessions_dir = get_sessions_dir()
-
-    # 1. Build map of session UUID -> rollout file path
-    rollout_map: Dict[str, Path] = {}
-    if sessions_dir.exists():
-        for r_path in sessions_dir.glob("**/*rollout-*.jsonl"):
-            # rollout files end with <uuid>.jsonl
-            stem_parts = r_path.stem.split("-")
-            if stem_parts:
-                sid = stem_parts[-1]
-                rollout_map[sid] = r_path
-
-    # 2. Parse session_index.jsonl
-    items: List[SessionItem] = []
-    if index_path.exists():
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line_str = line.strip()
-                    if not line_str:
-                        continue
-                    try:
-                        entry = json.loads(line_str)
-                        sid = entry.get("id")
-                        if not sid:
-                            continue
-
-                        title = entry.get("thread_name") or "Untitled Conversation"
-                        updated_at = entry.get("updated_at") or ""
-                        rel_time = format_relative_time(updated_at)
-                        r_path = rollout_map.get(sid)
-
-                        origin = inspect_session_provider(r_path) if r_path else "openai"
-
-                        items.append(SessionItem(
-                            id=sid,
-                            thread_name=title,
-                            updated_at=updated_at,
-                            relative_time=rel_time,
-                            rollout_path=r_path,
-                            origin_provider=origin or "openai",
-                        ))
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-    # Sort descending by updated_at
-    items.sort(key=lambda s: s.updated_at, reverse=True)
-    return items[:limit]
+def list_sessions(
+    limit: int | None = None,
+    *,
+    offset: int = 0,
+    search: str | None = None,
+    workspace: str | Path | None = None,
+    include_archived: bool = False,
+) -> list[SessionItem]:
+    if offset < 0 or (limit is not None and limit < 0):
+        raise ValueError("Session page bounds must be nonnegative.")
+    items = filter_sessions(
+        discover_sessions(include_archived=include_archived).sessions,
+        search=search,
+        workspace=workspace,
+    )
+    return items[offset:] if limit is None else items[offset : offset + limit]
 
 
-def find_session_by_id_or_title(query: str) -> Optional[SessionItem]:
-    """Find a session matching either a UUID prefix or title substring."""
-    all_sessions = list_sessions(limit=100)
-    q_lower = query.lower().strip()
-
-    # Exact ID match
-    for s in all_sessions:
-        if s.id.lower() == q_lower or s.id.lower().startswith(q_lower):
-            return s
-
-    # Title match
-    for s in all_sessions:
-        if q_lower in s.thread_name.lower():
-            return s
-
-    return None
+def find_session_by_id_or_title(
+    query: str, *, workspace: str | Path | None = None, include_archived: bool = False
+) -> SessionItem | None:
+    query = query.strip().casefold()
+    if not query:
+        raise ValueError("Enter a session UUID, UUID prefix, or title.")
+    items = list_sessions(workspace=workspace, include_archived=include_archived)
+    exact = [item for item in items if item.id == query]
+    matches = (
+        exact
+        or [item for item in items if item.id.startswith(query)]
+        or [item for item in items if query in item.thread_name.casefold()]
+    )
+    if len(matches) > 1:
+        raise AmbiguousSessionError(
+            f"{len(matches)} sessions match. Choose a complete UUID from cmgr sessions."
+        )
+    return matches[0] if matches else None

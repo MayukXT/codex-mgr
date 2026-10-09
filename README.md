@@ -42,6 +42,8 @@ cmgr provider edit my-api    # Edit a saved connection
 cmgr provider test my-api    # Check catalog access; no inference request
 cmgr model list --refresh    # Load the active connection's catalog
 cmgr model use MODEL_ID      # Select an exact model ID
+cmgr sessions --search bug   # Find sessions by title or UUID
+cmgr sessions --workspace .  # Sessions created in this directory
 cmgr switch                  # Show provider IDs and the saved active provider
 cmgr doctor                  # Check local configuration and endpoint reachability
 cmgr recover                 # Recover an interrupted configuration change

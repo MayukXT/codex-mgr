@@ -20,12 +20,23 @@ from codex_mgr.core.bridge import bridge_session_rollout
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
 from codex_mgr.core.providers import delete_provider
 from codex_mgr.core.runner import launch_codex
-from codex_mgr.core.sessions import find_session_by_id_or_title, list_sessions
+from codex_mgr.core.sessions import (
+    AmbiguousSessionError,
+    find_session_by_id_or_title,
+    list_sessions,
+)
 from codex_mgr.tui.dashboard import run_main_dashboard
 from codex_mgr.tui.doctor_view import render_doctor_report
 from codex_mgr.tui.provider_wizard import run_provider_wizard
 from codex_mgr.tui.session_picker import interactive_resume_session
-from codex_mgr.utils.display import console, get_symbol, print_error, print_success, print_warning
+from codex_mgr.utils.display import (
+    console,
+    get_symbol,
+    print_error,
+    print_success,
+    print_warning,
+    single_line,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +58,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume.add_argument(
         "--last", action="store_true", help="Resume the most recent session automatically"
     )
+    p_resume.add_argument("--workspace", help="Filter by the session's working directory")
+    p_resume.add_argument("--include-archived", action="store_true")
+
+    p_sessions = subparsers.add_parser(
+        "sessions", help="Find saved sessions by UUID, title or workspace"
+    )
+    p_sessions.add_argument("--search", help="UUID or title substring")
+    p_sessions.add_argument("--workspace", help="Exact working directory")
+    p_sessions.add_argument("--include-archived", action="store_true")
+    p_sessions.add_argument("--limit", type=int, help="Page size (default: all sessions)")
+    p_sessions.add_argument("--offset", type=int, default=0)
+    p_sessions.add_argument("--json", action="store_true", help="Machine-readable session metadata")
 
     # switch
     p_switch = subparsers.add_parser("switch", help="Switch active provider in config.toml")
@@ -141,18 +164,66 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    if args.command == "sessions":
+        import json
+
+        items = list_sessions(
+            args.limit,
+            offset=args.offset,
+            search=args.search,
+            workspace=args.workspace,
+            include_archived=args.include_archived,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "id": item.id,
+                            "title": item.thread_name,
+                            "updated_at": item.updated_at,
+                            "cwd": item.cwd,
+                            "archived": item.archived,
+                            "available": item.rollout_path is not None,
+                            "ambiguous": bool(item.duplicate_paths),
+                        }
+                        for item in items
+                    ],
+                    ensure_ascii=True,
+                ),
+            )
+        else:
+            for item in items:
+                state = (
+                    "duplicate files"
+                    if item.duplicate_paths
+                    else "missing file"
+                    if item.rollout_path is None
+                    else "archived"
+                    if item.archived
+                    else item.relative_time
+                )
+                console.print(
+                    f"{item.id}  {single_line(item.thread_name)}  ({state})", markup=False
+                )
+        return 0
+
     if args.command == "resume":
         settings = load_settings()
         target_p = args.target_provider or settings.active_provider_id
 
         if args.last:
-            all_s = list_sessions(limit=1)
+            all_s = list_sessions(
+                limit=1, workspace=args.workspace, include_archived=args.include_archived
+            )
             if not all_s:
                 print_error("No sessions found to resume.")
                 return 1
             target_session = all_s[0]
         elif args.session:
-            target_session = find_session_by_id_or_title(args.session)
+            target_session = find_session_by_id_or_title(
+                args.session, workspace=args.workspace, include_archived=args.include_archived
+            )
             if not target_session:
                 print_error(f"Could not find session matching: {args.session}")
                 return 1
@@ -160,6 +231,7 @@ def _main(argv: list[str] | None = None) -> int:
             interactive_resume_session(target_provider_id=target_p)
             return 0
 
+        target_session.require_rollout()
         # Auto-bridge if needed
         if target_session.rollout_path and target_session.origin_provider != target_p:
             ok, _count, msg = bridge_session_rollout(
@@ -269,6 +341,7 @@ def _main(argv: list[str] | None = None) -> int:
             print_error(f"Session '{args.session_id}' not found or rollout missing.")
             return 1
         try:
+            session.require_rollout()
             restored = restore_session_backup(session.id, session.rollout_path)
             print_success(f"Successfully restored session from: {restored.name}")
             return 0
@@ -392,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         return _main(argv)
     except KeyboardInterrupt:
         return 130
+    except AmbiguousSessionError as exc:
+        print_error(str(exc))
+        return 1
     except (OSError, ValueError, RuntimeError):
         print_error(
             "Operation failed. Check configuration, settings, permissions, or another writer."

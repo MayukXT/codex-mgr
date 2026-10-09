@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import unicodedata
 from typing import Any
 
 from InquirerPy import inquirer
@@ -62,6 +63,13 @@ _SYMBOLS = {
 def get_symbol(name: str) -> str:
     pair = _SYMBOLS.get(name, ("", ""))
     return pair[0] if supports_unicode() else pair[1]
+
+
+def single_line(value: str) -> str:
+    """Keep imported labels from injecting terminal controls or extra rows."""
+    return "".join(
+        " " if unicodedata.category(char) in {"Cc", "Cf", "Cs"} else char for char in value
+    )
 
 
 def print_success(message: str) -> None:
