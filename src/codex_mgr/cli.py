@@ -82,7 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # doctor
-    subparsers.add_parser("doctor", help="Run system diagnostics and verify environment health")
+    doctor_parser = subparsers.add_parser("doctor", help="Check local state without changing it")
+    doctor_parser.add_argument(
+        "--network", action="store_true", help="Also request the selected provider's model catalog"
+    )
     subparsers.add_parser("recover", help="Recover an interrupted configuration activation")
 
     # version & update
@@ -279,8 +282,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     elif args.command == "doctor":
-        render_doctor_report()
-        return 0
+        return 0 if render_doctor_report(network=args.network) else 1
 
     elif args.command == "version":
         from codex_mgr.core.version import check_for_updates, get_current_version
@@ -288,7 +290,10 @@ def _main(argv: list[str] | None = None) -> int:
         v = get_current_version()
         console.print(f"[bold accent]codex-mgr[/] version [bold success]v{v}[/]")
         with console.status("[dim]Checking for upstream updates...", spinner="dots"):
-            has_up, _latest, msg = check_for_updates()
+            has_up, latest, msg = check_for_updates()
+        if latest is None:
+            print_error(msg)
+            return 1
         if has_up:
             print_warning(msg)
             console.print("Run [bold accent]cmgr update[/] to upgrade to the latest release.")
@@ -300,7 +305,11 @@ def _main(argv: list[str] | None = None) -> int:
         from codex_mgr.core.version import check_for_updates, perform_self_update
 
         with console.status("[dim]Checking for updates on PyPI...", spinner="dots"):
-            has_up, _latest, msg = check_for_updates()
+            has_up, latest, msg = check_for_updates()
+
+        if latest is None:
+            print_error(msg)
+            return 1
 
         if not has_up:
             print_success(msg)
@@ -311,7 +320,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
 
         with console.status("[accent]Upgrading codex-mgr via pip...", spinner="dots"):
-            ok, update_msg = perform_self_update()
+            ok, update_msg = perform_self_update(latest)
         if ok:
             print_success(update_msg)
             return 0

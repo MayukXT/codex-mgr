@@ -1,144 +1,330 @@
-"""Environment diagnostic and health audit engine.
-
-Performs non-destructive checks on the Codex installation, configuration files,
-session storage, and provider connectivity to surface actionable advice.
-"""
+"""Read-only diagnostics with explicit limits on what each check establishes."""
 
 from __future__ import annotations
 
-import os
+import json
 from dataclasses import dataclass
-from typing import List
+from typing import Literal
 
 from codex_mgr.config.settings import load_settings
-from codex_mgr.core.models import test_provider_connectivity
-from codex_mgr.core.profiles import read_config_toml
-from codex_mgr.core.runner import is_codex_running
-from codex_mgr.core.sessions import list_sessions
-from codex_mgr.utils.paths import (
-    find_codex_binary,
-    get_backups_dir,
-    get_cmgr_settings_path,
-    get_config_toml_path,
-    get_sessions_dir,
-)
+from codex_mgr.core.auth import CredentialError, codex_login_status
+from codex_mgr.core.models import provider_headers, test_provider_connectivity
+from codex_mgr.core.profiles import effective_configuration, prepare_configuration, read_config_toml
+from codex_mgr.core.sessions import discover_sessions
+from codex_mgr.utils.files import read_optional
+from codex_mgr.utils.paths import find_codex_binary, get_codex_home, get_config_toml_path
+
+DiagnosticStatus = Literal["passed", "failed", "warning", "not_checked"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class DiagnosticResult:
     name: str
-    passed: bool
+    status: DiagnosticStatus
     details: str
     remediation: str = ""
 
+    @property
+    def passed(self) -> bool:
+        return self.status == "passed"
 
-def run_diagnostics() -> List[DiagnosticResult]:
-    """Execute all health checks and return the findings."""
-    results: List[DiagnosticResult] = []
 
-    # 1. Codex binary check
-    codex_bin = find_codex_binary()
-    if codex_bin and codex_bin.exists():
-        results.append(DiagnosticResult(
-            name="Codex CLI Binary",
-            passed=True,
-            details=f"Located at: {codex_bin}"
-        ))
+def _storage_results() -> list[DiagnosticResult]:
+    results = []
+    try:
+        catalog = discover_sessions(include_archived=True)
+        duplicates = sum(bool(item.duplicate_paths) for item in catalog.sessions)
+        missing = sum(item.rollout_path is None for item in catalog.sessions)
+        skipped = catalog.skipped_rollouts + catalog.skipped_index_records
+        incomplete = bool(duplicates or missing or skipped or catalog.unreadable_sources)
+        results.append(
+            DiagnosticResult(
+                "Session catalog",
+                "warning" if incomplete else "passed",
+                f"{len(catalog.sessions)} sessions; {duplicates} duplicate UUIDs; "
+                f"{missing} missing rollouts; {skipped} invalid entries; "
+                f"{catalog.unreadable_sources} unreadable sources.",
+                "Resolve duplicate or unreadable history before resuming it." if incomplete else "",
+            )
+        )
+    except (OSError, ValueError):
+        results.append(
+            DiagnosticResult(
+                "Session catalog",
+                "failed",
+                "Could not read the local session catalog.",
+                "Check session storage permissions. Existing history was not changed.",
+            )
+        )
+    # Do not call get_backups_dir(): diagnostics must not create directories.
+    home = get_codex_home()
+    folder = home / "backups"
+    try:
+        root = folder.resolve()
+        root.relative_to(home)
+        count = 0
+        for pattern in (
+            "config/config_*.toml",
+            "settings/cmgr_*.json",
+            "sessions/*/*.rollout.jsonl",
+        ):
+            for path in folder.glob(pattern):
+                path.resolve().relative_to(root)
+                count += path.is_file()
+        results.append(
+            DiagnosticResult(
+                "Backup inventory",
+                "passed",
+                f"{count} snapshot files; integrity was not checked.",
+            )
+        )
+        pending = 0
+        for path in folder.glob("transactions/*/journal.json"):
+            path.resolve().relative_to(root)
+            record = json.loads(path.read_bytes())
+            state = record.get("state") if isinstance(record, dict) else None
+            if not isinstance(state, str) or state not in {
+                "prepared",
+                "config_applied",
+                "committed",
+                "rolled_back",
+            }:
+                raise ValueError
+            pending += state not in {"committed", "rolled_back"}
+        results.append(
+            DiagnosticResult(
+                "Activation recovery",
+                "failed" if pending else "passed",
+                f"{pending} pending transactions." if pending else "No pending transactions found.",
+                "Run cmgr recover before applying another connection." if pending else "",
+            )
+        )
+    except (OSError, ValueError):
+        results.append(
+            DiagnosticResult(
+                "Backup inventory / recovery",
+                "failed",
+                "Backup or recovery records are unreadable.",
+                "Inspect backup storage and recovery records before retrying changes.",
+            )
+        )
+    results.append(
+        DiagnosticResult(
+            "Session writer ownership",
+            "not_checked",
+            "Writer locks are checked for the selected session when a mutation starts.",
+        )
+    )
+    return results
+
+
+def _connection_results(provider, *, network: bool) -> list[DiagnosticResult]:
+    results = []
+    if not provider.model_selected:
+        results.append(
+            DiagnosticResult(
+                "Connection application",
+                "warning",
+                "No exact model ID has been selected.",
+                "Choose an available model or enter an exact model ID before activation.",
+            )
+        )
     else:
-        results.append(DiagnosticResult(
-            name="Codex CLI Binary",
-            passed=False,
-            details="Could not locate codex executable in PATH or AppData.",
-            remediation="Install Codex or ensure its binary directory is added to your system PATH."
-        ))
+        try:
+            prepare_configuration(provider, read_optional(get_config_toml_path()))
+            results.append(
+                DiagnosticResult(
+                    "Connection application",
+                    "passed",
+                    "Local application rules accepted this connection.",
+                )
+            )
+        except (OSError, ValueError, TypeError):
+            results.append(
+                DiagnosticResult(
+                    "Connection application",
+                    "failed",
+                    "This connection cannot currently be applied.",
+                    "Check protocol support, model controls, credentials and enforced login settings.",
+                )
+            )
+    if provider.auth_type == "official_oauth":
+        status = codex_login_status()
+        credentials_ok = status.signed_in and status.method == "chatgpt"
+        results.append(
+            DiagnosticResult(
+                "Selected authentication",
+                "passed"
+                if credentials_ok
+                else "warning"
+                if status.method == "unavailable"
+                else "failed",
+                "Codex reports ChatGPT sign-in; inference access was not tested."
+                if credentials_ok
+                else "ChatGPT sign-in is not confirmed for this connection.",
+                "Run codex login, then retry the check." if not credentials_ok else "",
+            )
+        )
+    else:
+        try:
+            provider_headers(provider)
+            credentials_ok = provider.auth_type == "none" or bool(
+                provider.auth_token or provider.http_headers or provider.env_http_headers
+            )
+        except (CredentialError, ValueError):
+            credentials_ok = False
+        results.append(
+            DiagnosticResult(
+                "Selected authentication",
+                "passed" if credentials_ok else "failed",
+                "No authentication requested."
+                if credentials_ok and provider.auth_type == "none"
+                else "Selected credential references resolve; upstream acceptance was not tested."
+                if credentials_ok
+                else "The selected credential is missing or invalid.",
+                "Set this connection's credential; other provider keys are not a fallback."
+                if not credentials_ok
+                else "",
+            )
+        )
+    if network and credentials_ok and provider.auth_type != "official_oauth":
+        try:
+            ok, _message, elapsed = test_provider_connectivity(provider)
+            results.append(
+                DiagnosticResult(
+                    "Provider catalog",
+                    "passed" if ok else "failed",
+                    f"Selected catalog received ({elapsed} ms); inference was not tested."
+                    if ok
+                    else "Selected catalog request failed.",
+                    "Check this connection's endpoint, credentials and network." if not ok else "",
+                )
+            )
+        except (OSError, ValueError, RuntimeError):
+            results.append(
+                DiagnosticResult(
+                    "Provider catalog",
+                    "failed",
+                    "Selected catalog request could not complete.",
+                    "Check this connection's endpoint, credentials and network.",
+                )
+            )
+    else:
+        results.append(
+            DiagnosticResult(
+                "Provider catalog",
+                "not_checked",
+                "No catalog request was made.",
+                "Use cmgr doctor --network to check API catalog access."
+                if not network and provider.auth_type != "official_oauth"
+                else "",
+            )
+        )
+    return results
 
-    # 2. config.toml integrity
-    config_path = get_config_toml_path()
-    if config_path.exists():
+
+def run_diagnostics(*, network: bool = False) -> list[DiagnosticResult]:
+    """Check local state; network=True additionally requests an API catalog.
+
+    This never sends an inference request, changes settings or restores history.
+    ChatGPT sign-in status is read through Codex rather than cached token metadata.
+    """
+    results = []
+    try:
+        binary = find_codex_binary()
+        results.append(
+            DiagnosticResult(
+                "Codex CLI",
+                "passed" if binary is not None else "failed",
+                "Executable found." if binary is not None else "Executable not found.",
+                "Install Codex CLI and add it to PATH." if binary is None else "",
+            )
+        )
+    except OSError:
+        results.append(
+            DiagnosticResult(
+                "Codex CLI",
+                "failed",
+                "Executable discovery could not complete.",
+                "Check PATH and executable permissions.",
+            )
+        )
+    config_ok = False
+    try:
         data = read_config_toml()
-        if data:
-            mcp_count = len(data.get("mcp_servers", {}))
-            active_p = data.get("model_provider", "openai")
-            model = data.get("model", "default")
-            results.append(DiagnosticResult(
-                name="Configuration (config.toml)",
-                passed=True,
-                details=f"Valid TOML (Provider: {active_p}, Model: {model}, MCP Servers: {mcp_count})"
-            ))
-        else:
-            results.append(DiagnosticResult(
-                name="Configuration (config.toml)",
-                passed=False,
-                details="config.toml exists but could not be parsed.",
-                remediation="Check for syntax errors or restore from ~/.codex/config.toml.bak."
-            ))
+        effective_configuration(data)
+        config_ok = True
+        results.append(
+            DiagnosticResult(
+                "Local configuration",
+                "passed",
+                "config.toml parsed; selected profile exists."
+                if get_config_toml_path().exists()
+                else "No local config.toml; Codex defaults apply.",
+            )
+        )
+    except (OSError, ValueError, TypeError):
+        results.append(
+            DiagnosticResult(
+                "Local configuration",
+                "failed",
+                "Local configuration could not be read or parsed.",
+                "Repair config.toml or restore a verified configuration revision.",
+            )
+        )
+    results.append(
+        DiagnosticResult(
+            "Effective Codex configuration",
+            "not_checked",
+            "Managed settings and invocation overrides were not checked by this local-file check.",
+        )
+    )
+    settings = None
+    if config_ok:
+        try:
+            settings = load_settings()
+            results.append(
+                DiagnosticResult(
+                    "Manager settings",
+                    "passed",
+                    f"{len(settings.providers)} saved connections loaded.",
+                )
+            )
+        except (OSError, ValueError, TypeError):
+            results.append(
+                DiagnosticResult(
+                    "Manager settings",
+                    "failed",
+                    "Manager settings or selected connection are invalid.",
+                    "Repair cmgr.json and the selected connection definition before applying changes.",
+                )
+            )
     else:
-        results.append(DiagnosticResult(
-            name="Configuration (config.toml)",
-            passed=False,
-            details=f"config.toml not found at {config_path}",
-            remediation="Run Codex once to initialize default configuration."
-        ))
-
-    # 3. cmgr.json settings
-    settings_path = get_cmgr_settings_path()
-    settings = load_settings()
-    p_count = len(settings.providers)
-    results.append(DiagnosticResult(
-        name="Tool Settings (cmgr.json)",
-        passed=True,
-        details=f"{p_count} providers registered • Active: {settings.active_provider_id}"
-    ))
-
-    # 4. Session Storage & Rollouts
-    sessions_dir = get_sessions_dir()
-    all_sessions = list_sessions(limit=100)
-    if sessions_dir.exists():
-        results.append(DiagnosticResult(
-            name="Session Storage",
-            passed=True,
-            details=f"Indexed {len(all_sessions)} conversation sessions in ~/.codex/sessions"
-        ))
-    else:
-        results.append(DiagnosticResult(
-            name="Session Storage",
-            passed=True,
-            details="Sessions directory not yet initialized."
-        ))
-
-    # 5. Process lock check
-    running = is_codex_running()
-    if running:
-        results.append(DiagnosticResult(
-            name="Active Process Lock",
-            passed=True,
-            details="codex.exe is currently running (Remember to close active turns before switching)."
-        ))
-    else:
-        results.append(DiagnosticResult(
-            name="Active Process Lock",
-            passed=True,
-            details="No active codex processes (Safe to modify sessions and switch configs)."
-        ))
-
-    # 6. Active provider connectivity test
-    active_prov = settings.providers.get(settings.active_provider_id)
-    if active_prov:
-        healthy, msg, lat = test_provider_connectivity(active_prov)
-        results.append(DiagnosticResult(
-            name=f"Active Provider ({active_prov.name})",
-            passed=healthy,
-            details=f"{msg} ({lat}ms)" if healthy else msg,
-            remediation="Verify API key and internet connectivity." if not healthy else ""
-        ))
-
-    # 7. Backup storage
-    backups_dir = get_backups_dir()
-    backup_count = len(list(backups_dir.glob("**/*")))
-    results.append(DiagnosticResult(
-        name="Backup Storage",
-        passed=True,
-        details=f"Initialized at ~/.codex/backups/ ({backup_count} snapshot files)"
-    ))
-
+        results.append(
+            DiagnosticResult(
+                "Manager settings",
+                "not_checked",
+                "Loading the selected connection needs valid configuration.",
+            )
+        )
+    provider = settings.providers.get(settings.active_provider_id) if settings else None
+    if settings is not None and provider is None:
+        results.append(
+            DiagnosticResult(
+                "Selected connection",
+                "failed",
+                "The saved active connection does not exist.",
+                "Select an existing connection or add its definition.",
+            )
+        )
+    if provider is not None:
+        results.extend(_connection_results(provider, network=network))
+    results.extend(_storage_results())
+    results.append(
+        DiagnosticResult(
+            "Coding workflow",
+            "not_checked",
+            "Inference, tool execution and end-to-end resumption were not tested.",
+        )
+    )
     return results

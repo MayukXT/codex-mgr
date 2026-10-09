@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
-from rich.panel import Panel
+from rich.text import Text
 
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import activate_provider
@@ -30,6 +30,7 @@ from codex_mgr.utils.display import (
     print_banner,
     print_error,
     print_success,
+    print_warning,
     select_menu,
 )
 
@@ -255,31 +256,27 @@ def _handle_version_update() -> None:
     """Check version status and offer self-update in the TUI."""
     from codex_mgr.core.version import check_for_updates, get_current_version, perform_self_update
 
-    v = get_current_version()
     with console.status("[dim]Checking for upstream releases...", spinner="dots"):
         has_up, latest, msg = check_for_updates()
 
-    if has_up:
-        panel_msg = (
-            f"Installed Version: [bold accent]v{v}[/]\n"
-            f"Latest Release   : [bold success]v{latest}[/]\n\n"
-            f"A newer version of codex-mgr is available!"
-        )
-        console.print(Panel(panel_msg, title="✨ Update Available", border_style="warning"))
+    console.print(Text(f"Installed: v{get_current_version()}", style="bold accent"))
+    if latest is None:
+        print_error(msg)
+    elif has_up:
+        print_warning(msg)
 
         do_update = inquirer.confirm(
-            message=f"Upgrade codex-mgr to v{latest} now via pip?", default=True
+            message=f"Install cmgr-cli v{latest} with this Python's pip?", default=False
         ).execute()
 
         if do_update:
             with console.status("[accent]Upgrading codex-mgr via pip...", spinner="dots"):
-                ok, update_msg = perform_self_update()
+                ok, update_msg = perform_self_update(latest)
             if ok:
                 print_success(update_msg)
             else:
                 print_error(update_msg)
     else:
-        panel_msg = f"Installed Version: [bold success]v{v}[/]\nStatus           : {msg}"
-        console.print(Panel(panel_msg, title="Version Status", border_style="success"))
+        print_success(msg)
 
     inquirer.text(message="Press [Enter] to return to the menu...").execute()

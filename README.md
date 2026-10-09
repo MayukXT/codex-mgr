@@ -45,7 +45,8 @@ cmgr model use MODEL_ID      # Select an exact model ID
 cmgr sessions --search bug   # Find sessions by title or UUID
 cmgr sessions --workspace .  # Sessions created in this directory
 cmgr switch                  # Show provider IDs and the saved active provider
-cmgr doctor                  # Check local configuration and endpoint reachability
+cmgr doctor                  # Read local diagnostics without changing files
+cmgr doctor --network        # Also check API catalog access; no inference request
 cmgr recover                 # Recover an interrupted configuration change
 cmgr resume SESSION_UUID --to my-api
 cmgr restore SESSION_UUID --list
@@ -56,6 +57,8 @@ cmgr update --check
 ```
 
 `cmgr resume` activates the selected connection and model before launching Codex. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+
+`cmgr doctor` reports failed, warning and unchecked states separately. It does not establish inference or tool compatibility. Failed diagnostics and unavailable update checks return a nonzero exit code. `cmgr update` installs the checked stable release with the current Python interpreter's pip, verifies its installed version, and asks you to restart. If pip cannot manage that environment, use the package manager that installed it.
 
 Provider changes preserve TOML comments and unrelated settings, honor the selected Codex profile, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
 

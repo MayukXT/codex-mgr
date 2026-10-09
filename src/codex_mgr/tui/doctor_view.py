@@ -1,59 +1,35 @@
-"""Rich terminal report visualizer for environment diagnostics."""
+"""Compact, plain-text diagnostic results for narrow and redirected terminals."""
 
 from __future__ import annotations
 
-from rich.panel import Panel
-from rich.table import Table
+from rich.text import Text
 
 from codex_mgr.core.doctor import run_diagnostics
-from codex_mgr.utils.display import console, get_symbol
+from codex_mgr.utils.display import console, single_line
+
+_STATUS = {
+    "passed": ("OK", "success"),
+    "failed": ("FAIL", "error"),
+    "warning": ("WARN", "warning"),
+    "not_checked": ("NOT CHECKED", "muted"),
+}
 
 
-def render_doctor_report() -> None:
-    """Run diagnostics and render a high-polish summary table."""
-    with console.status("[accent]Running system diagnostics...", spinner="dots"):
-        results = run_diagnostics()
-
-    table = Table(
-        title=f"{get_symbol('gear')} Codex Environment Diagnostic Report",
-        header_style="bold cyan",
-        border_style="dim",
-        expand=False
-    )
-    table.add_column("Component", style="bold", min_width=25)
-    table.add_column("Status", justify="center", width=12)
-    table.add_column("Details", style="dim", min_width=45)
-
-    all_passed = True
-    for r in results:
-        if r.passed:
-            status = f"[bold success]{get_symbol('check')} PASSED[/]"
-        else:
-            status = f"[bold error]{get_symbol('cross')} FAILED[/]"
-            all_passed = False
-
-        table.add_row(r.name, status, r.details)
-
+def render_doctor_report(*, network: bool = False) -> bool:
+    """Return false only for a failed check; never imply workflow readiness."""
+    with console.status("Running diagnostics..."):
+        results = run_diagnostics(network=network)
+    console.print(Text("Codex diagnostics", style="bold accent"))
+    for result in results:
+        label, style = _STATUS[result.status]
+        console.print()
+        console.print(Text.assemble((label + "  ", style), (single_line(result.name), "bold")))
+        console.print(Text(single_line(result.details)))
+        if result.remediation:
+            console.print(Text(single_line(result.remediation), style="warning"))
+    failures = sum(result.status == "failed" for result in results)
+    unchecked = sum(result.status == "not_checked" for result in results)
+    warnings = sum(result.status == "warning" for result in results)
     console.print()
-    console.print(table)
-    console.print()
-
-    if all_passed:
-        console.print(
-            Panel(
-                f"[bold success]{get_symbol('check')} ALL CHECKS HEALTHY[/]\n"
-                "Your Codex environment and model providers are ready for seamless switching!",
-                border_style="success",
-                expand=False
-            )
-        )
-    else:
-        remediations = [f"• [bold]{r.name}:[/] {r.remediation}" for r in results if r.remediation]
-        if remediations:
-            console.print(
-                Panel(
-                    "[bold warning]Recommended Actions:[/]\n" + "\n".join(remediations),
-                    border_style="warning",
-                    expand=False
-                )
-            )
+    console.print(Text(f"{failures} failed; {warnings} warnings; {unchecked} not checked."))
+    return not failures
