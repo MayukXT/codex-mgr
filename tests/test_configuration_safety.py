@@ -1,0 +1,307 @@
+"""Configuration changes must preserve unrelated data and commit coherently."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from codex_mgr.config.schema import CmgrSettings, ProviderConfig
+from codex_mgr.config.settings import load_settings, save_settings
+from codex_mgr.core.profiles import read_config_toml, switch_active_provider
+
+
+@pytest.fixture
+def codex_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    return tmp_path
+
+
+def gateway(**kwargs):
+    return ProviderConfig(
+        id="gateway",
+        name="Gateway",
+        base_url="https://gateway.example/v1",
+        default_model="coding-model",
+        auth_type="env_var",
+        auth_token="$SYNTHETIC_KEY",
+        **kwargs,
+    )
+
+
+def test_malformed_toml_is_never_overwritten(codex_home):
+    path = codex_home / "config.toml"
+    original = b'[mcp_servers.example\nurl = "https://mcp.example"\n'
+    path.write_bytes(original)
+    ok, _ = switch_active_provider(gateway())
+    assert not ok
+    assert path.read_bytes() == original
+    assert not (codex_home / "backups/config").exists()
+
+
+def test_comments_headers_and_notice_state_survive(codex_home):
+    path = codex_home / "config.toml"
+    path.write_text(
+        """# user heading
+model = "old" # user comment
+[model_providers.gateway]
+name = "Old label"
+request_max_retries = 7 # keep retry
+[model_providers.gateway.http_headers]
+X-Custom = "value"
+[tui.model_availability_nux]
+old = 4
+[mcp_servers.example]
+url = "https://mcp.example"
+""",
+        encoding="utf-8",
+    )
+    ok, _ = switch_active_provider(gateway())
+    assert ok
+    text = path.read_text(encoding="utf-8")
+    assert "# user heading" in text and "# user comment" in text and "# keep retry" in text
+    data = read_config_toml()
+    table = data["model_providers"]["gateway"]
+    assert table["request_max_retries"] == 7
+    assert table["http_headers"]["X-Custom"] == "value"
+    assert table["env_key"] == "SYNTHETIC_KEY"
+    assert "bearer_token_env_var" not in table
+    assert data["tui"]["model_availability_nux"]["old"] == 4
+
+
+def test_legacy_controls_are_not_emitted(codex_home):
+    (codex_home / "config.toml").write_text('model = "old"\n', encoding="utf-8")
+    ok, _ = switch_active_provider(gateway(context_window_limit=8192))
+    assert ok
+    data = read_config_toml()
+    assert data["model_context_window"] == 8192
+    assert not {"model_reasoning", "stream", "max_tokens"} & data.keys()
+    assert (
+        not {"stream", "context_window", "max_tokens", "reasoning_budget"}
+        & data["model_providers"]["gateway"].keys()
+    )
+
+
+def test_openai_api_key_and_endpoint_reach_custom_connection(codex_home):
+    (codex_home / "config.toml").write_text('model = "old"\n', encoding="utf-8")
+    provider = ProviderConfig(
+        id="openai",
+        name="OpenAI API",
+        base_url="https://api.example/v1",
+        auth_token="synthetic-api-token",
+        default_model="coding-model",
+    )
+    ok, _ = switch_active_provider(provider)
+    assert ok
+    data = read_config_toml()
+    assert data["model_provider"] != "openai"
+    table = data["model_providers"][data["model_provider"]]
+    assert table["base_url"] == "https://api.example/v1"
+    assert table["experimental_bearer_token"] == "synthetic-api-token"
+
+
+def test_active_profile_is_updated_without_changing_global_model(codex_home):
+    (codex_home / "config.toml").write_text(
+        """model = "global"
+profile = "work"
+[profiles.work]
+model = "profile-old"
+[profiles.other]
+model = "other"
+""",
+        encoding="utf-8",
+    )
+    ok, _ = switch_active_provider(gateway())
+    assert ok
+    data = read_config_toml()
+    assert data["model"] == "global"
+    assert data["profiles"]["work"]["model"] == "coding-model"
+    assert data["profiles"]["other"]["model"] == "other"
+
+
+def test_settings_reads_do_not_create_files(codex_home):
+    settings = load_settings()
+    assert settings.providers
+    assert not (codex_home / "cmgr.json").exists()
+
+
+def test_corrupt_settings_raise_without_defaults_overwrite(codex_home):
+    path = codex_home / "cmgr.json"
+    path.write_bytes(b'{"providers":')
+    with pytest.raises(ValueError, match="settings"):
+        load_settings()
+    assert path.read_bytes() == b'{"providers":'
+
+
+def test_backup_failure_blocks_settings_save(codex_home, monkeypatch):
+    path = codex_home / "cmgr.json"
+    settings = CmgrSettings(active_provider_id="gateway", providers={"gateway": gateway()})
+    save_settings(settings)
+    original = path.read_bytes()
+    settings.providers["gateway"].name = "Changed"
+
+    def fail(*args, **kwargs):
+        raise PermissionError("synthetic permission error")
+
+    monkeypatch.setattr("codex_mgr.config.settings.create_snapshot", fail)
+    with pytest.raises(PermissionError):
+        save_settings(settings)
+    assert path.read_bytes() == original
+
+
+def test_stale_settings_cannot_overwrite_newer_changes(codex_home):
+    settings = CmgrSettings(active_provider_id="gateway", providers={"gateway": gateway()})
+    save_settings(settings)
+    a, b = load_settings(), load_settings()
+    a.providers["gateway"].name = "First edit"
+    save_settings(a)
+    b.providers["gateway"].name = "Stale edit"
+    with pytest.raises(RuntimeError, match="changed"):
+        save_settings(b)
+    assert (
+        json.loads((codex_home / "cmgr.json").read_text())["providers"]["gateway"]["name"]
+        == "First edit"
+    )
+
+
+def test_failed_activation_rolls_back_config_and_saved_state(codex_home, monkeypatch):
+    from codex_mgr.core.activation import activate_provider
+
+    path = codex_home / "config.toml"
+    path.write_bytes(b'model = "old"\n')
+    settings = CmgrSettings(
+        providers={
+            "openai": ProviderConfig(
+                id="openai",
+                name="ChatGPT",
+                base_url="https://api.openai.com/v1",
+                auth_type="official_oauth",
+            ),
+            "gateway": gateway(),
+        }
+    )
+    save_settings(settings)
+    before = (codex_home / "cmgr.json").read_bytes()
+
+    def fail(*args, **kwargs):
+        raise PermissionError("synthetic permission error")
+
+    monkeypatch.setattr("codex_mgr.core.activation.commit_settings", fail)
+    ok, _ = activate_provider("gateway")
+    assert not ok
+    assert path.read_bytes() == b'model = "old"\n'
+    assert (codex_home / "cmgr.json").read_bytes() == before
+
+
+def test_initial_settings_import_existing_custom_connection(codex_home):
+    (codex_home / "config.toml").write_text(
+        """model = "custom-model"
+model_provider = "existing_gateway"
+[model_providers.existing_gateway]
+name = "Existing"
+base_url = "https://existing.example/api"
+env_key = "SYNTHETIC_EXISTING_KEY"
+wire_api = "responses"
+""",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.active_provider_id == "existing_gateway"
+    provider = settings.providers["existing_gateway"]
+    assert provider.default_model == "custom-model"
+    assert provider.base_url == "https://existing.example/api"
+    assert provider.auth_token == "$SYNTHETIC_EXISTING_KEY"
+
+
+def test_emitted_configuration_matches_official_schema(codex_home):
+    from jsonschema.validators import validator_for
+
+    path = codex_home / "config.toml"
+    path.write_text('model = "old"\n', encoding="utf-8")
+    assert switch_active_provider(gateway())[0]
+    schema = json.loads(
+        (Path(__file__).parent / "fixtures/codex-0.159.0-config.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator_for(schema)(schema).validate(read_config_toml())
+
+
+@pytest.mark.parametrize("content", ['model_providers = "invalid"\n', "profiles = 10\n"])
+def test_invalid_config_tables_abort_before_mutation(codex_home, content):
+    path = codex_home / "config.toml"
+    path.write_text(content, encoding="utf-8")
+    assert not switch_active_provider(gateway())[0]
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_cli_provider_list_and_failed_switch_have_meaningful_status(codex_home):
+    from codex_mgr.cli import main
+
+    assert main(["provider", "list"]) == 0
+    assert main(["switch", "unknown-provider"]) == 1
+    assert not (codex_home / "cmgr.json").exists()
+
+
+def test_activation_refuses_to_overwrite_external_edit_on_rollback(codex_home, monkeypatch):
+    from codex_mgr.core.activation import activate_provider, recover_pending_activation
+
+    path = codex_home / "config.toml"
+    path.write_bytes(b'model = "old"\n')
+    settings = CmgrSettings(providers={"gateway": gateway()})
+    save_settings(settings)
+    before = (codex_home / "cmgr.json").read_bytes()
+
+    def fail(*args, **kwargs):
+        path.write_bytes(b'model = "external-edit"\n')
+        raise PermissionError("synthetic error")
+
+    monkeypatch.setattr("codex_mgr.core.activation.commit_settings", fail)
+    assert not activate_provider("gateway")[0]
+    assert path.read_bytes() == b'model = "external-edit"\n'
+    assert (codex_home / "cmgr.json").read_bytes() == before
+    assert not recover_pending_activation()[0]
+
+
+def test_interrupted_activation_recovers_after_writer_releases_lock(codex_home, monkeypatch):
+    from codex_mgr.core.activation import activate_provider, recover_pending_activation
+
+    path = codex_home / "config.toml"
+    path.write_bytes(b'model = "old"\n')
+    settings = CmgrSettings(providers={"gateway": gateway()})
+    save_settings(settings)
+    before = (codex_home / "cmgr.json").read_bytes()
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("codex_mgr.core.activation.commit_settings", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        activate_provider("gateway")
+    assert read_config_toml()["model"] == "coding-model"
+    assert recover_pending_activation()[0]
+    assert path.read_bytes() == b'model = "old"\n'
+    assert (codex_home / "cmgr.json").read_bytes() == before
+
+
+def test_successful_activation_commits_both_files(codex_home):
+    from codex_mgr.core.activation import activate_provider
+
+    (codex_home / "config.toml").write_bytes(b'model = "old"\n')
+    save_settings(CmgrSettings(providers={"gateway": gateway()}))
+    assert activate_provider("gateway")[0]
+    assert read_config_toml()["model_provider"] == "gateway"
+    assert json.loads((codex_home / "cmgr.json").read_text())["active_provider_id"] == "gateway"
+
+
+def test_saved_api_key_configuration_preserves_existing_oauth_identity(codex_home):
+    (codex_home / "config.toml").write_bytes(b'model = "current-model"\n')
+    api = ProviderConfig(
+        id="openai",
+        name="OpenAI API",
+        base_url="https://api.openai.com/v1",
+        auth_token="synthetic-token",
+    )
+    save_settings(CmgrSettings(providers={"openai": api}))
+    settings = load_settings()
+    assert settings.providers["openai"].auth_token == "synthetic-token"
+    assert settings.providers[settings.active_provider_id].auth_type == "official_oauth"

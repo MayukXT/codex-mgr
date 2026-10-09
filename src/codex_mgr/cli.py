@@ -9,29 +9,27 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 from codex_mgr import __version__
 from codex_mgr.config.portable import apply_import_bundle, export_bundle
-from codex_mgr.config.settings import load_settings, save_settings
+from codex_mgr.config.settings import load_settings
+from codex_mgr.core.activation import activate_provider, recover_pending_activation
 from codex_mgr.core.backup import restore_session_backup
 from codex_mgr.core.bridge import bridge_session_rollout
-from codex_mgr.core.doctor import run_diagnostics
-from codex_mgr.core.profiles import switch_active_provider
 from codex_mgr.core.runner import launch_codex
 from codex_mgr.core.sessions import find_session_by_id_or_title, list_sessions
 from codex_mgr.tui.dashboard import run_main_dashboard
 from codex_mgr.tui.doctor_view import render_doctor_report
 from codex_mgr.tui.provider_wizard import run_provider_wizard
 from codex_mgr.tui.session_picker import interactive_resume_session
-from codex_mgr.utils.display import console, print_error, print_success, print_warning
+from codex_mgr.utils.display import console, get_symbol, print_error, print_success, print_warning
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(
         prog="cmgr",
-        description="Codex Manager (cmgr): Universal multi-provider bridge & session manager for Codex CLI."
+        description="Codex Manager (cmgr): Universal multi-provider bridge & session manager for Codex CLI.",
     )
     parser.add_argument("-v", "--version", action="version", version=f"codex-mgr {__version__}")
 
@@ -40,25 +38,36 @@ def build_parser() -> argparse.ArgumentParser:
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume a session (interactive or direct ID)")
     p_resume.add_argument("session", nargs="?", help="Session UUID or title keyword")
-    p_resume.add_argument("--to", dest="target_provider", help="Target provider to bridge session into")
-    p_resume.add_argument("--last", action="store_true", help="Resume the most recent session automatically")
+    p_resume.add_argument(
+        "--to", dest="target_provider", help="Target provider to bridge session into"
+    )
+    p_resume.add_argument(
+        "--last", action="store_true", help="Resume the most recent session automatically"
+    )
 
     # switch
     p_switch = subparsers.add_parser("switch", help="Switch active provider in config.toml")
-    p_switch.add_argument("provider", nargs="?", help="Provider identifier (e.g. openai, agentrouter)")
+    p_switch.add_argument(
+        "provider", nargs="?", help="Provider identifier (e.g. openai, agentrouter)"
+    )
 
     # doctor
     subparsers.add_parser("doctor", help="Run system diagnostics and verify environment health")
+    subparsers.add_parser("recover", help="Recover an interrupted configuration activation")
 
     # version & update
-    p_version = subparsers.add_parser("version", help="Show installed version and check for updates")
+    subparsers.add_parser("version", help="Show installed version and check for updates")
     p_update = subparsers.add_parser("update", help="Check and self-update codex-mgr via pip")
-    p_update.add_argument("--check", action="store_true", help="Only check for updates without installing")
+    p_update.add_argument(
+        "--check", action="store_true", help="Only check for updates without installing"
+    )
 
     # export
     p_export = subparsers.add_parser("export", help="Export configuration bundle to JSON")
     p_export.add_argument("-o", "--output", default="cmgr-config.json", help="Output file path")
-    p_export.add_argument("--sanitize-keys", action="store_true", help="Redact API keys for safe sharing")
+    p_export.add_argument(
+        "--sanitize-keys", action="store_true", help="Redact API keys for safe sharing"
+    )
 
     # import
     p_import = subparsers.add_parser("import", help="Import configuration bundle from JSON")
@@ -66,7 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--strategy", choices=["merge", "overwrite", "rename"], default="merge")
 
     # restore
-    p_restore = subparsers.add_parser("restore", help="Restore session rollout from backup snapshot")
+    p_restore = subparsers.add_parser(
+        "restore", help="Restore session rollout from backup snapshot"
+    )
     p_restore.add_argument("session_id", help="UUID of session to restore")
 
     # provider
@@ -76,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     """Main execution function."""
     if argv is None:
         argv = sys.argv[1:]
@@ -114,10 +125,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # Auto-bridge if needed
         if target_session.rollout_path and target_session.origin_provider != target_p:
-            ok, count, msg = bridge_session_rollout(
+            ok, _count, msg = bridge_session_rollout(
                 target_session.rollout_path,
                 target_provider_id=target_p,
-                create_backup_snapshot=True
+                create_backup_snapshot=True,
             )
             if ok:
                 print_success(msg)
@@ -136,14 +147,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         pid = args.provider.lower()
         if pid not in settings.providers:
-            print_error(f"Provider '{pid}' not found. Available: {', '.join(settings.providers.keys())}")
+            print_error(
+                f"Provider '{pid}' not found. Available: {', '.join(settings.providers.keys())}"
+            )
             return 1
 
-        target = settings.providers[pid]
-        settings.active_provider_id = pid
-        save_settings(settings, create_backup=False)
-
-        ok, msg = switch_active_provider(target)
+        ok, msg = activate_provider(pid)
         if ok:
             print_success(msg)
             return 0
@@ -151,16 +160,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             print_error(msg)
             return 1
 
+    elif args.command == "recover":
+        ok, msg = recover_pending_activation()
+        (print_success if ok else print_error)(msg)
+        return 0 if ok else 1
+
     elif args.command == "doctor":
         render_doctor_report()
         return 0
 
     elif args.command == "version":
         from codex_mgr.core.version import check_for_updates, get_current_version
+
         v = get_current_version()
         console.print(f"[bold accent]codex-mgr[/] version [bold success]v{v}[/]")
         with console.status("[dim]Checking for upstream updates...", spinner="dots"):
-            has_up, latest, msg = check_for_updates()
+            has_up, _latest, msg = check_for_updates()
         if has_up:
             print_warning(msg)
             console.print("Run [bold accent]cmgr update[/] to upgrade to the latest release.")
@@ -170,8 +185,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     elif args.command == "update":
         from codex_mgr.core.version import check_for_updates, perform_self_update
+
         with console.status("[dim]Checking for updates on PyPI...", spinner="dots"):
-            has_up, latest, msg = check_for_updates()
+            has_up, _latest, msg = check_for_updates()
 
         if not has_up:
             print_success(msg)
@@ -214,8 +230,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             restored = restore_session_backup(session.id, session.rollout_path)
             print_success(f"Successfully restored session from: {restored.name}")
             return 0
-        except Exception as e:
-            print_error(f"Restore failed: {str(e)}")
+        except (OSError, ValueError, RuntimeError) as e:
+            print_error(f"Restore failed: {e!s}")
             return 1
 
     elif args.command == "provider":
@@ -228,10 +244,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             console.print("\n[bold accent]Configured Providers:[/]")
             for pid, p in settings.providers.items():
                 active = " (ACTIVE)" if pid == settings.active_provider_id else ""
-                console.print(f"{dot} [bold]{p.name}[/] ({pid}){active} [dim]Model: {p.default_model}[/]")
+                console.print(
+                    f"{dot} [bold]{p.name}[/] ({pid}){active} [dim]Model: {p.default_model}[/]"
+                )
             return 0
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, ValueError, RuntimeError):
+        print_error(
+            "Operation failed. Check configuration, settings, permissions, or another writer."
+        )
+        return 1
 
 
 if __name__ == "__main__":

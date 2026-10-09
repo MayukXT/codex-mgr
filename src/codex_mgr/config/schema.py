@@ -6,8 +6,11 @@ multi-tier reasoning levels (up to 'ultra'), and portable configuration.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
+import re
+from typing import Literal
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 class ModelInfo(BaseModel):
@@ -16,9 +19,9 @@ class ModelInfo(BaseModel):
     id: str = Field(description="Unique model slug/identifier, e.g. 'gpt-6.1-sol'")
     name: str = Field(description="Human-friendly display name, e.g. 'GPT-6.1 Sol'")
     context_window: int = Field(default=256000, description="Context window capacity in tokens")
-    supported_reasoning_levels: List[str] = Field(
+    supported_reasoning_levels: list[str] = Field(
         default_factory=lambda: ["low", "medium", "high", "xhigh", "max"],
-        description="Supported reasoning tiers"
+        description="Supported reasoning tiers",
     )
     is_custom: bool = Field(default=False, description="Whether added manually by the user")
 
@@ -26,29 +29,80 @@ class ModelInfo(BaseModel):
 class ProviderConfig(BaseModel):
     """Configuration for an AI model provider endpoint."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(description="Unique provider identifier, e.g. 'agentrouter'")
+    codex_provider_id: str | None = None
     name: str = Field(description="Human-friendly label, e.g. 'AgentRouter'")
     base_url: str = Field(description="Normalized base URL, e.g. 'https://agentrouter.org/v1'")
     wire_api: Literal["responses", "chat", "anthropic_proxy"] = Field(
-        default="responses",
-        description="Wire protocol used by Codex"
+        default="responses", description="Wire protocol used by Codex"
     )
     auth_type: Literal["bearer_token", "env_var", "official_oauth", "none"] = Field(
-        default="bearer_token",
-        description="Authentication mechanism"
+        default="bearer_token", description="Authentication mechanism"
     )
-    auth_token: Optional[str] = Field(
+    auth_token: str | None = Field(
         default=None,
-        description="API key or token string (can be an $ENV_VAR reference)"
+        repr=False,
+        description="API key or token string (can be an $ENV_VAR reference)",
     )
+    http_headers: dict[str, str] | None = Field(default=None, repr=False)
+    env_http_headers: dict[str, str] | None = Field(default=None, repr=False)
     default_model: str = Field(default="gpt-6.1-sol", description="Default model slug")
     reasoning_effort: str = Field(default="medium", description="Default reasoning effort")
-    proxy_port: Optional[int] = Field(
-        default=4099,
-        description="Local loopback port for Anthropic proxy if applicable"
+    proxy_port: int | None = Field(
+        default=4099, description="Local loopback port for Anthropic proxy if applicable"
     )
     is_preset: bool = Field(default=False, description="Whether built-in default preset")
-    models: List[ModelInfo] = Field(default_factory=list, description="Associated models list")
+    models: list[ModelInfo] = Field(default_factory=list, description="Associated models list")
+
+    # Advanced granular model controls
+    context_window_limit: int | None = Field(
+        default=None,
+        gt=0,
+        description="Custom context window token cap (e.g. 128000, 256000, None for model default)",
+    )
+    max_output_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description="Maximum completion output tokens (e.g. 4096, 16384, None for default)",
+    )
+    streaming: bool = Field(
+        default=True, description="Enable live response streaming (stream: true / false)"
+    )
+    reasoning_enabled: bool = Field(
+        default=True,
+        description="Enable model reasoning / chain-of-thought (reasoning: true / false)",
+    )
+    reasoning_budget: int | None = Field(
+        default=None,
+        gt=0,
+        description="Explicit thinking budget in tokens (e.g. 8192, 16384 for Claude/thinking models)",
+    )
+
+    @field_validator("id", "codex_provider_id")
+    @classmethod
+    def valid_id(cls, value):
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+            raise ValueError("Use letters, digits, underscores or hyphens for the connection ID.")
+        return value
+
+    @field_validator("name", "default_model", "reasoning_effort")
+    @classmethod
+    def nonempty(cls, value):
+        if not value.strip() or any(ord(c) < 32 for c in value):
+            raise ValueError("Value must contain printable text.")
+        return value.strip()
+
+    @field_validator("base_url")
+    @classmethod
+    def valid_url(cls, value):
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.fragment:
+            raise ValueError("Use a complete HTTP or HTTPS endpoint without a fragment.")
+        if parsed.username or parsed.password:
+            raise ValueError("Store credentials separately from the endpoint URL.")
+        return value.rstrip("/")
 
 
 class AppPreferences(BaseModel):
@@ -63,16 +117,24 @@ class AppPreferences(BaseModel):
 class CmgrSettings(BaseModel):
     """Root schema for ~/.codex/cmgr.json."""
 
+    model_config = ConfigDict(extra="forbid")
+
     version: int = Field(default=1, description="Schema version")
+    _source_bytes: bytes | None = PrivateAttr(default=None)
+    _loaded: bool = PrivateAttr(default=False)
     active_provider_id: str = Field(default="openai", description="Currently active provider ID")
-    providers: Dict[str, ProviderConfig] = Field(
-        default_factory=dict,
-        description="Dictionary of configured providers keyed by ID"
+    providers: dict[str, ProviderConfig] = Field(
+        default_factory=dict, description="Dictionary of configured providers keyed by ID"
     )
     preferences: AppPreferences = Field(
-        default_factory=AppPreferences,
-        description="Application preferences"
+        default_factory=AppPreferences, description="Application preferences"
     )
+
+    @model_validator(mode="after")
+    def matching_provider_ids(self):
+        if any(key != provider.id for key, provider in self.providers.items()):
+            raise ValueError("Provider dictionary keys must match their connection IDs.")
+        return self
 
 
 class ExportBundle(BaseModel):
@@ -81,8 +143,7 @@ class ExportBundle(BaseModel):
     version: int = 1
     exported_at: str
     active_provider_id: str
-    providers: Dict[str, ProviderConfig]
+    providers: dict[str, ProviderConfig]
     is_sanitized: bool = Field(
-        default=False,
-        description="True if sensitive API keys were stripped during export"
+        default=False, description="True if sensitive API keys were stripped during export"
     )

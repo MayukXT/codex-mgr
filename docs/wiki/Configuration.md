@@ -17,6 +17,8 @@ ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Code
 
 Prefer an environment-variable credential reference over storing a pasted key. Never put a key in an endpoint URL. See [privacy](Security-And-Privacy-Guide.md) and [compatibility](Compatibility.md).
 
+Provider changes preserve comments and unrelated configuration. A selected Codex profile receives model settings. Invalid files and conflicting edits stop the operation; snapshots preserve the prior configuration and manager settings. `cmgr recover` repairs an interrupted change when the files still match the recorded transaction. Review external conflicts before retrying.
+
 `tui.model_availability_nux` stores startup-notice counts, not model access or limits. A model's display name comes from catalog metadata; the desktop app can label a model without that metadata as Custom.
 
 [Official Codex configuration](https://developers.openai.com/codex/config-advanced/).

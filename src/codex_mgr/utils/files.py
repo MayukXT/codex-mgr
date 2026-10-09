@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 _UNSET = object()
 
@@ -101,6 +102,8 @@ def read_snapshot(path: Path) -> bytes:
     """Verify new snapshots; legacy snapshots have no corruption checksum."""
     data = path.read_bytes()
     checksum = path.with_name(path.name + ".sha256")
+    if not checksum.exists() and re.search(r"T\d{6}\.\d{6}Z_[a-f0-9]{32}", path.name):
+        raise ValueError("Snapshot integrity record is missing; original state was preserved.")
     if checksum.exists():
         digest = hashlib.sha256(data).hexdigest()
         if checksum.read_text(encoding="ascii").strip() != digest:

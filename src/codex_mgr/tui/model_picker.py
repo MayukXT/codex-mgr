@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
-from rich.panel import Panel
 from rich.table import Table
 
 from codex_mgr.config.schema import ModelInfo
 from codex_mgr.config.settings import load_settings, save_settings
+from codex_mgr.core.activation import apply_settings
 from codex_mgr.core.models import probe_remote_models
-from codex_mgr.core.profiles import switch_active_provider
-from codex_mgr.utils.display import console, print_error, print_success, print_warning
+from codex_mgr.utils.display import console, print_error, print_success, print_warning, select_menu
 
 
 def manage_provider_models(provider_id: str) -> None:
@@ -27,14 +26,11 @@ def manage_provider_models(provider_id: str) -> None:
         return
 
     while True:
+        console.clear()
         # Render current models table
-        table = Table(
-            title=f"Models for: {provider.name}",
-            border_style="dim",
-            expand=False
-        )
+        table = Table(title=f"Models for: {provider.name}", border_style="#475569", expand=False)
         table.add_column("Default", justify="center", width=8)
-        table.add_column("Model Slug", style="bold accent")
+        table.add_column("Model Slug", style="bold cyan")
         table.add_column("Display Name")
         table.add_column("Context Window", justify="right")
         table.add_column("Type", justify="center")
@@ -49,20 +45,30 @@ def manage_provider_models(provider_id: str) -> None:
         console.print(table)
         console.print()
 
-        action = inquirer.select(
+        action = select_menu(
             message=f"Manage models for {provider.name}:",
             choices=[
-                Choice(value="add", name="➕ Add New Model (Manual entry or endpoint probe)"),
-                Choice(value="set_default", name="⭐ Set Active Default Model"),
-                Choice(value="set_effort", name=f"⚙️  Change Reasoning Effort (Current: {provider.reasoning_effort})"),
-                Choice(value="remove", name="🗑️  Remove Model"),
-                Choice(value="back", name="↩️  Back"),
+                Choice(value="set_default", name="1. ⭐  Set Default Model"),
+                Choice(value="add", name="2. ➕  Add New Model"),
+                Choice(value="remove", name="3. 🗑️   Remove Model"),
+                Choice(value="tuning", name="4. 🔧  Advanced Tuning"),
+                Choice(value=None, name="← Back (b)"),
             ],
-            default="back"
-        ).execute()
+            default="set_default",
+            allow_back=True,
+            shortcuts={"1": "set_default", "2": "add", "3": "remove", "4": "tuning"},
+        )
 
-        if action == "back":
+        if not action:
             break
+
+        if action == "tuning":
+            from codex_mgr.tui.advanced_controls import run_advanced_controls
+
+            run_advanced_controls(provider.id)
+            settings = load_settings()
+            provider = settings.providers.get(provider_id)
+            continue
 
         if action == "add":
             _add_model_flow(provider)
@@ -76,15 +82,18 @@ def manage_provider_models(provider_id: str) -> None:
             chosen_slug = inquirer.select(
                 message="Select model to set as default:",
                 choices=choices,
-                default=provider.default_model
+                default=provider.default_model,
             ).execute()
             provider.default_model = chosen_slug
-            save_settings(settings, create_backup=True)
-
-            # If provider is currently active, sync to config.toml
-            if settings.active_provider_id == provider.id:
-                switch_active_provider(provider)
-            print_success(f"Default model for {provider.name} set to: {chosen_slug}")
+            ok, message = apply_settings(
+                settings,
+                activate_provider_id=provider.id
+                if settings.active_provider_id == provider.id
+                else None,
+            )
+            (print_success if ok else print_error)(message)
+            settings = load_settings()
+            provider = settings.providers[provider_id]
 
         elif action == "set_effort":
             new_effort = inquirer.select(
@@ -97,24 +106,33 @@ def manage_provider_models(provider_id: str) -> None:
                     Choice(value="max", name="max (Maximum reasoning)"),
                     Choice(value="ultra", name="ultra (Agentic delegation / maximum depth)"),
                 ],
-                default=provider.reasoning_effort
+                default=provider.reasoning_effort,
             ).execute()
             provider.reasoning_effort = new_effort
-            save_settings(settings, create_backup=True)
-            if settings.active_provider_id == provider.id:
-                switch_active_provider(provider)
-            print_success(f"Reasoning effort updated to: {new_effort}")
+            ok, message = apply_settings(
+                settings,
+                activate_provider_id=provider.id
+                if settings.active_provider_id == provider.id
+                else None,
+            )
+            (print_success if ok else print_error)(message)
 
         elif action == "remove":
             if len(provider.models) <= 1:
                 print_warning("Cannot remove the only model registered for this provider.")
                 continue
-            choices = [Choice(value=m.id, name=f"{m.name} ({m.id})") for m in provider.models if m.id != provider.default_model]
+            choices = [
+                Choice(value=m.id, name=f"{m.name} ({m.id})")
+                for m in provider.models
+                if m.id != provider.default_model
+            ]
             if not choices:
                 print_warning("Cannot remove the active default model. Switch default model first.")
                 continue
             choices.append(Choice(value=None, name="Cancel"))
-            to_remove = inquirer.select(message="Select model to remove:", choices=choices).execute()
+            to_remove = inquirer.select(
+                message="Select model to remove:", choices=choices
+            ).execute()
             if to_remove:
                 provider.models = [m for m in provider.models if m.id != to_remove]
                 save_settings(settings, create_backup=True)
@@ -129,12 +147,14 @@ def _add_model_flow(provider) -> None:
             Choice(value="probe", name="🔍 Probe provider endpoint for available models"),
             Choice(value="manual", name="✏️  Enter Model ID manually"),
         ],
-        default="probe"
+        default="probe",
     ).execute()
 
     if method == "probe":
         console.print("[dim]Probing endpoint for available models...[/]")
-        ok, probed_models, err = probe_remote_models(provider.base_url, provider.auth_token, provider.wire_api)
+        ok, probed_models, err = probe_remote_models(
+            provider.base_url, provider.auth_token, provider.wire_api
+        )
         if ok and probed_models:
             existing_ids = {m.id for m in provider.models}
             new_models = [m for m in probed_models if m.id not in existing_ids]
@@ -143,8 +163,7 @@ def _add_model_flow(provider) -> None:
                 return
             choices = [Choice(value=m, name=f"{m.name} ({m.id})") for m in new_models[:25]]
             chosen: ModelInfo = inquirer.select(
-                message="Select a discovered model to add:",
-                choices=choices
+                message="Select a discovered model to add:", choices=choices
             ).execute()
             provider.models.append(chosen)
             print_success(f"Added model: {chosen.name} ({chosen.id})")
@@ -153,11 +172,22 @@ def _add_model_flow(provider) -> None:
             print_warning(f"Could not auto-detect models: {err}. Falling back to manual entry.")
 
     # Manual entry
-    mid = inquirer.text(message="Enter the exact Model ID (e.g. claude-5-5-sonnet-20260928):").execute().strip()
+    mid = (
+        inquirer.text(message="Enter the exact Model ID (e.g. claude-5-5-sonnet-20260928):")
+        .execute()
+        .strip()
+    )
     if not mid:
         return
-    name = inquirer.text(message="Enter a friendly display name:", default=mid).execute().strip() or mid
-    ctx_str = inquirer.text(message="Context window capacity in tokens:", default="256000").execute().strip()
+    name = (
+        inquirer.text(message="Enter a friendly display name:", default=mid).execute().strip()
+        or mid
+    )
+    ctx_str = (
+        inquirer.text(message="Context window capacity in tokens:", default="256000")
+        .execute()
+        .strip()
+    )
     try:
         ctx = int(ctx_str)
     except ValueError:

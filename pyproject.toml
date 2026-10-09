@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codex-mgr"
+name = "cmgr-cli"
 version = "1.0.0"
-description = "Universal multi-provider manager and reasoning-blob session bridge for OpenAI Codex CLI"
+description = "Providers, models, and session recovery for Codex CLI"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -22,7 +22,7 @@ keywords = [
     "session-manager"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -37,8 +37,7 @@ classifiers = [
 dependencies = [
     "rich>=13.7.0",
     "inquirerpy>=0.3.4",
-    "tomli-w>=1.0.0",
-    "tomli>=2.0.1; python_version < '3.11'",
+    "tomlkit>=0.13.2,<1",
     "httpx>=0.27.0",
     "pydantic>=2.6.0"
 ]
@@ -47,7 +46,9 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.3.0"
+    "ruff>=0.3.0",
+    "jsonschema>=4.21.0",
+    "build>=1.2"
 ]
 
 [project.scripts]
@@ -56,6 +57,9 @@ codex-mgr = "codex_mgr.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codex_mgr"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "docs/wiki/", "scripts/", "README.md", "FORDEV.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

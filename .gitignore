@@ -71,6 +71,12 @@ private/
 
 # Local Runtime & Session Dumps (Never expose local user chats or keys)
 backups/sessions/
+/backups/
+/sessions/
+/archived_sessions/
+/config.toml
+/models_cache.json
+*.cmgr.lock
 output-dump/
 *.jsonl
 *.jsonl.bak*

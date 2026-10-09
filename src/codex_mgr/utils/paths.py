@@ -55,6 +55,11 @@ def get_backups_dir() -> Path:
     return backups_dir
 
 
+def get_auth_json_path() -> Path:
+    """Return the path to ~/.codex/auth.json."""
+    return get_codex_home() / "auth.json"
+
+
 def find_codex_binary() -> Optional[Path]:
     """Dynamically locate the codex executable on the system.
 

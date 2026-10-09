@@ -1,109 +1,184 @@
-"""Surgical config.toml orchestrator.
-
-Updates the active model provider and model settings while strictly preserving
-all custom MCP servers (e.g. kaggle, firecrawl), hooks, desktop themes, and trusted paths.
-"""
+"""Validated, comment-preserving Codex connection configuration."""
 
 from __future__ import annotations
 
-import shutil
-import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+import re
+from collections.abc import Mapping
+from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
 
 from codex_mgr.config.schema import ProviderConfig
+from codex_mgr.utils.files import atomic_write, create_snapshot, mutation_lock, read_optional
 from codex_mgr.utils.paths import get_backups_dir, get_config_toml_path
-from codex_mgr.utils.toml_writer import dump_toml
 
 
-def read_config_toml() -> Dict[str, Any]:
-    """Parse ~/.codex/config.toml into a Python dictionary."""
-    config_path = get_config_toml_path()
-    if not config_path.exists():
-        return {}
+class ConfigurationError(ValueError):
+    pass
+
+
+def parse_configuration(raw: bytes | None):
     try:
-        content = config_path.read_bytes()
-        return tomllib.loads(content.decode("utf-8"))
-    except Exception:
-        return {}
+        doc = tomlkit.parse((raw or b"").decode("utf-8"))
+        for key in ("model_providers", "profiles"):
+            if key in doc and (
+                not isinstance(doc[key], Mapping)
+                or any(not isinstance(v, Mapping) for v in doc[key].values())
+            ):
+                raise ConfigurationError(f"The {key} setting must contain named tables.")
+        return doc
+    except (UnicodeDecodeError, TOMLKitError) as exc:
+        raise ConfigurationError(
+            "Invalid config.toml; repair it before changing providers."
+        ) from exc
 
 
-def switch_active_provider(provider: ProviderConfig) -> Tuple[bool, str]:
-    """Surgically update config.toml to point to the specified provider.
+def read_config_toml() -> dict[str, Any]:
+    return parse_configuration(read_optional(get_config_toml_path())).unwrap()
 
-    Preserves 100% of user MCP servers, desktop appearance, hooks, and project trust.
-    """
-    config_path = get_config_toml_path()
-    if not config_path.exists():
-        return False, f"config.toml does not exist at {config_path}"
 
-    # 1. Create safety backup
-    try:
-        bak_file = config_path.with_suffix(".toml.bak")
-        shutil.copy2(config_path, bak_file)
+def effective_configuration(data: dict[str, Any]) -> dict[str, Any]:
+    effective = dict(data)
+    profile = data.get("profile")
+    if profile:
+        selected = data.get("profiles", {}).get(profile)
+        if not isinstance(selected, dict):
+            raise ConfigurationError("The selected Codex profile does not exist.")
+        effective.update(selected)
+    return effective
 
-        # Snapshot in ~/.codex/backups/config/
-        snap_dir = get_backups_dir() / "config"
-        snap_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(config_path, snap_dir / f"config_{ts}.toml")
-    except Exception as e:
-        return False, f"Could not create pre-switch backup: {str(e)}"
 
-    # 2. Read existing configuration
-    data = read_config_toml()
+def connection_id(provider: ProviderConfig) -> str:
+    if provider.auth_type == "official_oauth":
+        return "openai"
+    chosen = provider.codex_provider_id or provider.id
+    return f"cmgr_{chosen}" if chosen in {"openai", "ollama", "lmstudio"} else chosen
 
-    # 3. Apply updates to model and reasoning effort
-    data["model"] = provider.default_model
-    data["model_reasoning_effort"] = provider.reasoning_effort
 
-    # 4. Configure provider blocks
-    if provider.id == "openai":
-        # Official OpenAI does not specify model_provider at top level
-        data.pop("model_provider", None)
+def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
+    doc = parse_configuration(raw)
+    # Revalidate mutable settings before producing any side effects.
+    provider = ProviderConfig.model_validate(provider.model_dump())
+    if provider.wire_api != "responses":
+        raise ConfigurationError(
+            "This connection needs a verified Responses adapter before activation."
+        )
+    if (
+        not provider.streaming
+        or provider.max_output_tokens is not None
+        or provider.reasoning_budget is not None
+    ):
+        raise ConfigurationError(
+            "Streaming, output caps and thinking budgets are adapter controls for this connection."
+        )
+    force_login = doc.get("forced_login_method")
+    if force_login == "chatgpt" and provider.auth_type != "official_oauth":
+        raise ConfigurationError("Codex is configured to require ChatGPT sign-in.")
+    if force_login == "api" and provider.auth_type == "official_oauth":
+        raise ConfigurationError("Codex is configured to require API-key authentication.")
+    target = doc
+    if doc.get("profile"):
+        profile = str(doc["profile"])
+        if profile not in doc.get("profiles", {}):
+            raise ConfigurationError("The selected Codex profile does not exist.")
+        target = doc["profiles"][profile]
+    target["model"] = provider.default_model
+    effort = provider.reasoning_effort if provider.reasoning_enabled else "none"
+    model = next((m for m in provider.models if m.id == provider.default_model), None)
+    if (
+        model
+        and model.supported_reasoning_levels
+        and effort not in model.supported_reasoning_levels
+    ):
+        raise ConfigurationError("The selected model does not advertise this reasoning effort.")
+    target["model_reasoning_effort"] = effort
+    for key in ("model_reasoning", "stream", "max_tokens"):
+        target.pop(key, None)
+    if provider.context_window_limit is not None:
+        target["model_context_window"] = provider.context_window_limit
     else:
-        data["model_provider"] = provider.id
-
-        if "model_providers" not in data or not isinstance(data["model_providers"], dict):
-            data["model_providers"] = {}
-
-        # Configure provider endpoint details
-        p_table: Dict[str, Any] = {
-            "name": provider.name,
-            "wire_api": "responses" if provider.wire_api == "responses" else "chat",
-        }
-
-        # If Anthropic proxy, point base_url to local loopback
-        if provider.wire_api == "anthropic_proxy":
-            port = provider.proxy_port or 4099
-            p_table["base_url"] = f"http://127.0.0.1:{port}/v1"
-            p_table["wire_api"] = "responses"
-        else:
-            p_table["base_url"] = provider.base_url
-
-        # Authentication credentials
-        if provider.auth_token:
-            if provider.auth_token.startswith("$"):
-                p_table["bearer_token_env_var"] = provider.auth_token[1:]
+        if target is not doc and doc.get("model_context_window") is not None:
+            raise ConfigurationError(
+                "This profile inherits a global context limit. Change the global limit explicitly or set a profile limit."
+            )
+        target.pop("model_context_window", None)
+    chosen_id = connection_id(provider)
+    target["model_provider"] = chosen_id
+    if provider.auth_type == "official_oauth":
+        override = doc.get("model_providers", {}).get("openai", {})
+        if (
+            any(k in override for k in ("base_url", "env_key", "experimental_bearer_token"))
+            or override.get("requires_openai_auth") is False
+        ):
+            raise ConfigurationError(
+                "An existing OpenAI connection override conflicts with ChatGPT sign-in. Preserve it as a separate custom connection first."
+            )
+    else:
+        if "model_providers" not in doc:
+            doc["model_providers"] = tomlkit.table()
+        if chosen_id not in doc["model_providers"]:
+            doc["model_providers"][chosen_id] = tomlkit.table()
+        table = doc["model_providers"][chosen_id]
+        table["name"] = provider.name
+        table["base_url"] = provider.base_url
+        table["wire_api"] = "responses"
+        for key in (
+            "stream",
+            "context_window",
+            "max_tokens",
+            "reasoning_budget",
+            "bearer_token_env_var",
+            "env_key",
+            "experimental_bearer_token",
+        ):
+            table.pop(key, None)
+        table["requires_openai_auth"] = False
+        if provider.auth_type != "none":
+            token = provider.auth_token
+            if not token:
+                raise ConfigurationError(
+                    "An API key or environment-variable reference is required."
+                )
+            if token.startswith("$"):
+                variable = token[1:]
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+                    raise ConfigurationError("Invalid credential environment-variable name.")
+                table["env_key"] = variable
+            elif provider.auth_type == "env_var":
+                raise ConfigurationError("An environment credential must use $VARIABLE syntax.")
             else:
-                p_table["experimental_bearer_token"] = provider.auth_token
+                table["experimental_bearer_token"] = token
+        if provider.http_headers is not None:
+            table["http_headers"] = provider.http_headers
+        if provider.env_http_headers is not None:
+            table["env_http_headers"] = provider.env_http_headers
+    encoded = tomlkit.dumps(doc).encode("utf-8")
+    parse_configuration(encoded)
+    return encoded
 
-        data["model_providers"][provider.id] = p_table
 
-    # 5. Atomic write
-    tmp_path = config_path.with_suffix(".toml.tmp")
+def snapshot_configuration() -> None:
+    path = get_config_toml_path()
+    if path.exists():
+        create_snapshot(path, get_backups_dir() / "config", prefix="config_", suffix=".toml")
+        atomic_write(path.with_suffix(".toml.bak"), path.read_bytes())
+
+
+def switch_active_provider(provider: ProviderConfig) -> tuple[bool, str]:
+    """Apply config only; application actions use activation.activate_provider."""
+    path = get_config_toml_path()
     try:
-        toml_string = dump_toml(data)
-        tmp_path.write_text(toml_string, encoding="utf-8")
-        tmp_path.replace(config_path)
-        return True, f"Switched to {provider.name} (Model: {provider.default_model})"
-    except Exception as exc:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        return False, f"Failed to write config.toml: {str(exc)}"
+        with mutation_lock(path):
+            before = read_optional(path)
+            encoded = prepare_configuration(provider, before)
+            snapshot_configuration()
+            atomic_write(path, encoded, expected=before)
+        return True, f"Selected {provider.name}: {provider.default_model}"
+    except ConfigurationError as exc:
+        return False, str(exc)
+    except (OSError, ValueError, RuntimeError):
+        return (
+            False,
+            "Configuration was not applied. Check syntax, credentials, supported controls, permissions, or another writer.",
+        )

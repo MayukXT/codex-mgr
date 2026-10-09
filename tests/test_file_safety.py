@@ -1,6 +1,10 @@
 """Failure and recovery contracts for mutation boundaries."""
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,27 +25,80 @@ def test_external_change_is_preserved(tmp_path):
 def test_failed_replace_preserves_original_and_cleans_temp(tmp_path):
     target = tmp_path / "config.toml"
     target.write_bytes(b"original")
-    with patch("codex_mgr.utils.files.os.replace", side_effect=PermissionError):
-        with pytest.raises(PermissionError):
-            atomic_write(target, b"changed", expected=b"original")
+    with (
+        patch("codex_mgr.utils.files.os.replace", side_effect=PermissionError),
+        pytest.raises(PermissionError),
+    ):
+        atomic_write(target, b"changed", expected=b"original")
     assert target.read_bytes() == b"original"
     assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_overlapping_mutations_fail_without_waiting(tmp_path):
     target = tmp_path / "config.toml"
-    with mutation_lock(target):
-        with pytest.raises(FileConflictError):
-            with mutation_lock(target):
-                pytest.fail("overlapping writer entered")
+    with mutation_lock(target), pytest.raises(FileConflictError), mutation_lock(target):
+        pytest.fail("overlapping writer entered")
     with mutation_lock(target):
         pass
 
 
+def test_mutation_lock_excludes_another_process(tmp_path):
+    import codex_mgr.utils.files
+
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(codex_mgr.utils.files.__file__).resolve().parents[2])
+    code = """import sys
+from pathlib import Path
+from codex_mgr.utils.files import mutation_lock, FileConflictError
+try:
+    with mutation_lock(Path(sys.argv[1])):
+        sys.exit(1)
+except FileConflictError:
+    sys.exit(0)
+"""
+    target = tmp_path / "config.toml"
+    with mutation_lock(target):
+        child = subprocess.run(
+            [sys.executable, "-c", code, str(target)],
+            env=environment,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    assert child.returncode == 0
+
+
+def test_failed_flush_preserves_original(tmp_path):
+    target = tmp_path / "config.toml"
+    target.write_bytes(b"original")
+    with (
+        patch("codex_mgr.utils.files.os.fsync", side_effect=OSError("synthetic full disk")),
+        pytest.raises(OSError),
+    ):
+        atomic_write(target, b"changed", expected=b"original")
+    assert target.read_bytes() == b"original"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_missing_integrity_record_is_not_treated_as_legacy(tmp_path):
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_bytes(b'{"type":"session_meta","payload":{"id":"synthetic"}}\n')
+    with patch("codex_mgr.core.backup.get_backups_dir", return_value=tmp_path / "backups"):
+        backup = create_session_backup("synthetic", rollout)
+        backup.with_name(backup.name + ".sha256").unlink()
+        with pytest.raises(ValueError, match="integrity"):
+            restore_session_backup("synthetic", rollout, backup)
+
+
 def test_fast_snapshots_do_not_collide_and_restore_preserves_newer_turns(tmp_path):
     rollout = tmp_path / "rollout.jsonl"
-    original = json.dumps({"type": "session_meta", "payload": {"id": "synthetic-session"}}).encode() + b"\n"
-    newer = original + b'{"type":"response_item","payload":{"type":"message","content":"new turn"}}\n'
+    original = (
+        json.dumps({"type": "session_meta", "payload": {"id": "synthetic-session"}}).encode()
+        + b"\n"
+    )
+    newer = (
+        original + b'{"type":"response_item","payload":{"type":"message","content":"new turn"}}\n'
+    )
     rollout.write_bytes(original)
     with patch("codex_mgr.core.backup.get_backups_dir", return_value=tmp_path / "backups"):
         first = create_session_backup("synthetic-session", rollout)

@@ -40,6 +40,7 @@ cmgr                         # Open the terminal menu
 cmgr provider add            # Configure a provider
 cmgr switch                  # Show provider IDs and the saved active provider
 cmgr doctor                  # Check local configuration and endpoint reachability
+cmgr recover                 # Recover an interrupted configuration change
 cmgr export --output setup.json --sanitize-keys
 cmgr import setup.json
 cmgr --version
@@ -47,6 +48,8 @@ cmgr update --check
 ```
 
 The CLI also includes `resume`, `restore`, and `switch <provider-id>`. Their current implementation has known issues; review the compatibility notes before using them with existing sessions or configuration.
+
+Provider changes preserve TOML comments and unrelated settings, honor the selected Codex profile, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
 
 `codex-mgr` is an alias for `cmgr`.
 
