@@ -82,18 +82,22 @@ def test_failed_flush_preserves_original(tmp_path):
 
 def test_missing_integrity_record_is_not_treated_as_legacy(tmp_path):
     rollout = tmp_path / "rollout.jsonl"
-    rollout.write_bytes(b'{"type":"session_meta","payload":{"id":"synthetic"}}\n')
+    rollout.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000001"}}\n'
+    )
     with patch("codex_mgr.core.backup.get_backups_dir", return_value=tmp_path / "backups"):
-        backup = create_session_backup("synthetic", rollout)
+        backup = create_session_backup("00000000-0000-0000-0000-000000000001", rollout)
         backup.with_name(backup.name + ".sha256").unlink()
         with pytest.raises(ValueError, match="integrity"):
-            restore_session_backup("synthetic", rollout, backup)
+            restore_session_backup("00000000-0000-0000-0000-000000000001", rollout, backup)
 
 
 def test_fast_snapshots_do_not_collide_and_restore_preserves_newer_turns(tmp_path):
     rollout = tmp_path / "rollout.jsonl"
     original = (
-        json.dumps({"type": "session_meta", "payload": {"id": "synthetic-session"}}).encode()
+        json.dumps(
+            {"type": "session_meta", "payload": {"id": "00000000-0000-0000-0000-000000000001"}}
+        ).encode()
         + b"\n"
     )
     newer = (
@@ -101,25 +105,29 @@ def test_fast_snapshots_do_not_collide_and_restore_preserves_newer_turns(tmp_pat
     )
     rollout.write_bytes(original)
     with patch("codex_mgr.core.backup.get_backups_dir", return_value=tmp_path / "backups"):
-        first = create_session_backup("synthetic-session", rollout)
-        second = create_session_backup("synthetic-session", rollout)
+        first = create_session_backup("00000000-0000-0000-0000-000000000001", rollout)
+        second = create_session_backup("00000000-0000-0000-0000-000000000001", rollout)
         assert first != second
         rollout.write_bytes(newer)
-        restore_session_backup("synthetic-session", rollout, first)
+        restore_session_backup("00000000-0000-0000-0000-000000000001", rollout, first)
     assert rollout.read_bytes() == original
-    snapshots = list((tmp_path / "backups/sessions/synthetic-session").glob("*.rollout.jsonl"))
+    snapshots = list(
+        (tmp_path / "backups/sessions/00000000-0000-0000-0000-000000000001").glob("*.rollout.jsonl")
+    )
     assert any(p.read_bytes() == newer for p in snapshots)
 
 
 def test_corrupt_backup_is_rejected_before_restore(tmp_path):
     rollout = tmp_path / "rollout.jsonl"
-    rollout.write_bytes(b'{"type":"session_meta","payload":{"id":"synthetic"}}\n')
+    rollout.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000001"}}\n'
+    )
     with patch("codex_mgr.core.backup.get_backups_dir", return_value=tmp_path / "backups"):
-        backup = create_session_backup("synthetic", rollout)
+        backup = create_session_backup("00000000-0000-0000-0000-000000000001", rollout)
         backup.write_bytes(b"tampered")
         before = rollout.read_bytes()
         with pytest.raises(ValueError, match="integrity"):
-            restore_session_backup("synthetic", rollout, backup)
+            restore_session_backup("00000000-0000-0000-0000-000000000001", rollout, backup)
     assert rollout.read_bytes() == before
 
 

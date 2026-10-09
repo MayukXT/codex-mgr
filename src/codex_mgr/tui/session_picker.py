@@ -1,114 +1,168 @@
-"""Interactive session picker and auto-bridge launcher.
-
-Displays human-friendly conversation titles, origin badges, and handles
-cross-provider conversion before launching Codex seamlessly.
-"""
+"""Paged session search, details and explicit conversion consent."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
-from rich.panel import Panel
+from rich.text import Text
 
 from codex_mgr.config.settings import load_settings
-from codex_mgr.core.bridge import bridge_session_rollout
-from codex_mgr.core.runner import is_codex_running, launch_codex
-from codex_mgr.core.sessions import SessionItem, list_sessions
-from codex_mgr.utils.display import (
-    console,
-    get_symbol,
-    print_error,
-    print_success,
-    print_warning,
-    select_menu,
-)
+from codex_mgr.core.resume import preview_resume, resume_session
+from codex_mgr.core.sessions import SessionItem, discover_sessions, filter_sessions
+from codex_mgr.utils.display import console, print_error, print_warning, select_menu, single_line
 
 
-def interactive_resume_session(target_provider_id: str | None = None) -> None:
-    """Show interactive session picker with auto-bridge validation and handoff."""
-    settings = load_settings()
-    active_id = target_provider_id or settings.active_provider_id
+def pick_session(
+    *,
+    workspace: str | Path | None = None,
+    include_archived: bool = False,
+    with_backups: bool = False,
+) -> SessionItem | None:
+    query = ""
+    offset = 0
+    catalogs = {}
+    while True:
+        if include_archived not in catalogs:
+            catalogs[include_archived] = discover_sessions(include_archived=include_archived)
+        catalog = catalogs[include_archived]
+        items = filter_sessions(catalog.sessions, search=query, workspace=workspace)
+        if with_backups:
+            from codex_mgr.core.backup import list_session_backups
 
-    # Check for active codex running lock
-    if is_codex_running():
-        print_warning("Codex CLI is currently running in another window.")
-        confirm_proceed = inquirer.confirm(
-            message="Switching or modifying sessions while Codex is active may cause file lock issues. Continue anyway?",
-            default=False,
-        ).execute()
-        if not confirm_proceed:
-            return
-
-    with console.status("[accent]Scanning conversation sessions...", spinner="dots"):
-        sessions = list_sessions(limit=40)
-
-    if not sessions:
-        print_warning("No previous conversation sessions found in ~/.codex/sessions.")
-        return
-
-    choices = []
-    for s in sessions:
-        needs_conv = s.origin_provider != active_id
-        action_badge = f"[Auto-Bridge ➔ {active_id}]" if needs_conv else "[Direct Resume]"
-        label = f"[{s.origin_provider.upper():<10}] {s.thread_name[:38]:<38} ({s.relative_time}) {action_badge}"
-        choices.append(Choice(value=s, name=label))
-
-    choices.append(Choice(value=None, name="← Back (b)"))
-
-    selected_session: SessionItem | None = select_menu(
-        message="Select session to resume:",
-        choices=choices,
-        default=choices[0].value if choices else None,
-        allow_back=True,
-    )
-
-    if selected_session is None:
-        return
-
-    try:
-        selected_session.require_rollout()
-    except (OSError, ValueError) as exc:
-        print_error(str(exc))
-        return
-
-    # Check if conversion is needed
-    if selected_session.origin_provider != active_id:
-        panel_content = (
-            f"This session was originally bound to: [bold router]{selected_session.origin_provider.upper()}[/]\n"
-            f"Your current target provider is     : [bold openai]{active_id.upper()}[/]\n\n"
-            f"• An immutable backup snapshot will be saved to ~/.codex/backups/\n"
-            f"• Incompatible encrypted reasoning blobs will be cleanly bridged\n"
-            f"• 100% of your messages, prompts, code diffs, and tool calls are preserved."
+            items = [item for item in items if list_session_backups(item.id)]
+        page_size = max(1, min(12, console.height - 12))
+        offset = min(offset, max(0, ((len(items) - 1) // page_size) * page_size))
+        choices = []
+        for item in items[offset : offset + page_size]:
+            width = max(10, console.width - 8)
+            label = single_line(item.thread_name)[:width]
+            choices.append(Choice(item, label))
+        if offset:
+            choices.append(Choice("previous", "Previous page"))
+        if offset + page_size < len(items):
+            choices.append(Choice("next", "Next page"))
+        choices.extend(
+            [
+                Choice("search", "Search"),
+                Choice("refresh", "Refresh"),
+                Choice("workspace", "All workspaces" if workspace else "Current workspace"),
+                Choice("archived", "Hide archived" if include_archived else "Include archived"),
+                Choice(None, "Back"),
+            ]
         )
-        console.print(
-            Panel(
-                panel_content, title="⚡ Cross-Provider Auto-Bridge Notice", border_style="warning"
+        if catalog.skipped_rollouts or catalog.skipped_index_records or catalog.unreadable_sources:
+            print_warning(
+                "Some session sources are unreadable or invalid. Use Codex's history picker for other storage formats."
             )
+        start = offset + 1 if items else 0
+        selected = select_menu(
+            f"Sessions {start}-{min(offset + page_size, len(items))} of {len(items)}:", choices
         )
+        if selected is None:
+            return None
+        if isinstance(selected, SessionItem):
+            return selected
+        if selected == "next":
+            offset += page_size
+        elif selected == "previous":
+            offset -= page_size
+        elif selected == "search":
+            query = (
+                inquirer.text(message="Title or UUID:", default=query, mandatory=False).execute()
+                or ""
+            )
+            offset = 0
+        elif selected == "workspace":
+            workspace = None if workspace else Path.cwd()
+            offset = 0
+        elif selected == "archived":
+            include_archived = not include_archived
+            offset = 0
+        elif selected == "refresh":
+            catalogs.clear()
 
-        confirm = inquirer.confirm(
-            message=f"Proceed with auto-bridge and launch Codex under '{active_id}'?", default=True
-        ).execute()
 
-        if not confirm:
-            print_warning("Resumption cancelled by user.")
+def show_session_details(session: SessionItem) -> None:
+    console.print()
+    console.print(Text(single_line(session.thread_name), style="bold"))
+    for key, value in [
+        ("UUID", session.id),
+        ("Updated", session.relative_time),
+        ("Connection", session.origin_provider),
+        ("Workspace", session.cwd or "Unknown"),
+    ]:
+        console.print(Text(f"{key}: {single_line(value)}"))
+    if session.archived:
+        console.print("Archived", markup=False)
+    console.print()
+
+
+def pick_snapshot(paths: list[Path]) -> Path | None:
+    offset = 0
+    while True:
+        size = max(1, min(10, console.height - 10))
+        choices = [
+            Choice(
+                path,
+                f"{offset + index + 1}. {single_line(path.name)[: max(10, console.width - 12)]}",
+            )
+            for index, path in enumerate(paths[offset : offset + size])
+        ]
+        if offset:
+            choices.append(Choice("previous", "Previous page"))
+        if offset + size < len(paths):
+            choices.append(Choice("next", "Next page"))
+        choices.append(Choice(None, "Back"))
+        selected = select_menu(
+            f"Snapshots {offset + 1 if paths else 0}-{min(offset + size, len(paths))} of {len(paths)}:",
+            choices,
+        )
+        if selected is None or isinstance(selected, Path):
+            return selected
+        if selected == "next":
+            offset += size
+        elif selected == "previous":
+            offset = max(0, offset - size)
+
+
+def interactive_resume_session(
+    target_provider_id: str | None = None,
+    *,
+    workspace: str | Path | None = None,
+    include_archived: bool = False,
+) -> None:
+    session = pick_session(workspace=workspace, include_archived=include_archived)
+    if session is None:
+        return
+    show_session_details(session)
+    settings = load_settings()
+    try:
+        preview = preview_resume(session, target_provider_id, settings=settings)
+    except (OSError, ValueError, RuntimeError):
+        print_error(
+            "Cannot prepare this session. Check its identity, selected connection and credentials; encrypted or paginated history may require the original Codex connection."
+        )
+        return
+    if preview.changed_records:
+        console.print(f"Target connection: {preview.connection_id}", markup=False)
+        if preview.encrypted_items:
+            print_warning(
+                f"Conversion removes {preview.encrypted_items} encrypted items. Readable summaries remain; the original is saved in a recovery snapshot."
+            )
+        if not inquirer.confirm(
+            message="Save a snapshot, convert and resume?", default=False
+        ).execute():
             return
-
-        if selected_session.rollout_path and selected_session.rollout_path.exists():
-            with console.status("[accent]Bridging session reasoning blobs...", spinner="dots"):
-                ok, _count, msg = bridge_session_rollout(
-                    selected_session.rollout_path,
-                    target_provider_id=active_id,
-                    create_backup_snapshot=True,
-                )
-            if ok:
-                print_success(msg)
-            else:
-                print_error(f"Bridge failed: {msg}")
-                return
-
-    # Process handoff to Codex
-    console.print(
-        f"\n[bold accent]{get_symbol('rocket')} Launching Codex session: {selected_session.thread_name}[/]\n"
+    elif select_menu("Session:", [Choice("resume", "Resume"), Choice(None, "Back")]) != "resume":
+        return
+    code, message = resume_session(
+        session,
+        target_provider_id,
+        allow_reasoning_loss=True,
+        expected_digest=preview.session_digest,
+        settings=settings,
     )
-    launch_codex(session_id=selected_session.id)
+    if code:
+        print_error(message)

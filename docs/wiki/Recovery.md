@@ -19,12 +19,27 @@ These commands print local session metadata. JSON output includes titles, UUIDs,
 
 Session conversion changes saved Codex rollout files. Removing encrypted reasoning removes information that cannot be reconstructed from visible conversation text.
 
-The current 1.0.0 backup lookup and restore paths have known issues. Before modifying an important session, stop active Codex writers and make an independent copy of the rollout and configuration. Preserve the complete session UUID.
+Resume validates the selected connection, exact model and required credentials before changing a session. It uses the Codex connection ID from configuration, which can differ from the manager's friendly connection ID. Invalid or truncated JSONL stops conversion before any session replacement.
+
+```sh
+cmgr resume <session-uuid> --to <connection-id>
+cmgr resume <session-uuid> --to <connection-id> --allow-reasoning-loss
+```
+
+The second form explicitly allows removal of encrypted reasoning. Readable summaries remain. The menu previews the conversion and asks before removing encrypted items. Encrypted-only compaction, messages and tool results have no portable plaintext replacement, so conversion stops and preserves the source. Paginated or inherited history stores require Codex's canonical store workflow for conversion; direct resume with the original connection remains available.
+
+Conversion preserves record order and every source byte outside the selected metadata/reasoning values. Unknown records, images, function calls and tool output are retained. This establishes file preservation, not successful inference on every endpoint.
+
+Codex 0.159.0 writer locks coordinate conversion and restore with the selected session's native writer. An active writer blocks the operation. Older Codex versions and other editors must be stopped before editing saved history because they do not share this protocol. Expected-content checks also stop replacement when a file changed during preparation.
 
 ```sh
 cmgr restore <session-uuid>
+cmgr restore <session-uuid> --list
+cmgr restore <session-uuid> --snapshot <listed-filename>
 ```
 
-Restore replaces session state. Preserve newer turns before restoring an older snapshot. Backups can contain prompts, source code, tool output, configuration, and credentials; keep them private.
+Restore verifies snapshot integrity and identity, then saves current content in a new snapshot before replacement. Legacy backups stored under a 12-character UUID suffix are listed only when their metadata matches the complete UUID. Restoring a legacy copy also creates a checksummed copy in the full UUID directory and retains the legacy original. Corrupt, truncated or mismatched snapshots are rejected.
+
+Backups can contain prompts, source code, tool output, configuration, and credentials; keep them private. Checksums detect corruption and do not authenticate a snapshot against deliberate replacement of both the file and checksum.
 
 [Compatibility](Compatibility.md) describes the current supported limits.

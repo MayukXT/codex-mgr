@@ -15,11 +15,10 @@ from codex_mgr.config.portable import apply_import_bundle, export_bundle
 from codex_mgr.config.schema import ModelInfo
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import activate_provider, recover_pending_activation
-from codex_mgr.core.backup import restore_session_backup
-from codex_mgr.core.bridge import bridge_session_rollout
+from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
 from codex_mgr.core.providers import delete_provider
-from codex_mgr.core.runner import launch_codex
+from codex_mgr.core.resume import resume_session
 from codex_mgr.core.sessions import (
     AmbiguousSessionError,
     find_session_by_id_or_title,
@@ -60,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_resume.add_argument("--workspace", help="Filter by the session's working directory")
     p_resume.add_argument("--include-archived", action="store_true")
+    p_resume.add_argument(
+        "--allow-reasoning-loss",
+        action="store_true",
+        help="Allow backed-up conversion to remove encrypted reasoning",
+    )
 
     p_sessions = subparsers.add_parser(
         "sessions", help="Find saved sessions by UUID, title or workspace"
@@ -111,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
         "restore", help="Restore session rollout from backup snapshot"
     )
     p_restore.add_argument("session_id", help="UUID of session to restore")
+    p_restore.add_argument("--list", action="store_true", help="List available recovery snapshots")
+    p_restore.add_argument("--snapshot", help="Exact snapshot filename from --list")
 
     # provider
     p_provider = subparsers.add_parser("provider", help="Manage configured providers")
@@ -228,24 +234,22 @@ def _main(argv: list[str] | None = None) -> int:
                 print_error(f"Could not find session matching: {args.session}")
                 return 1
         else:
-            interactive_resume_session(target_provider_id=target_p)
+            interactive_resume_session(
+                target_provider_id=target_p,
+                workspace=args.workspace,
+                include_archived=args.include_archived,
+            )
             return 0
 
-        target_session.require_rollout()
-        # Auto-bridge if needed
-        if target_session.rollout_path and target_session.origin_provider != target_p:
-            ok, _count, msg = bridge_session_rollout(
-                target_session.rollout_path,
-                target_provider_id=target_p,
-                create_backup_snapshot=True,
-            )
-            if ok:
-                print_success(msg)
-            else:
-                print_error(f"Bridge failed: {msg}")
-                return 1
-
-        return launch_codex(session_id=target_session.id)
+        code, message = resume_session(
+            target_session,
+            target_p,
+            allow_reasoning_loss=args.allow_reasoning_loss,
+            settings=settings,
+        )
+        if code:
+            print_error(message)
+        return code
 
     elif args.command == "switch":
         settings = load_settings()
@@ -336,17 +340,32 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     elif args.command == "restore":
-        session = find_session_by_id_or_title(args.session_id)
+        session = find_session_by_id_or_title(args.session_id, include_archived=True)
         if not session or not session.rollout_path:
             print_error(f"Session '{args.session_id}' not found or rollout missing.")
             return 1
         try:
+            backups = list_session_backups(session.id)
+            if args.list:
+                for snapshot in backups:
+                    legacy = " (legacy)" if snapshot.parent.name != session.id else ""
+                    console.print(snapshot.name + legacy, markup=False)
+                return 0
+            selected = None
+            if args.snapshot:
+                matches = [snapshot for snapshot in backups if snapshot.name == args.snapshot]
+                if len(matches) != 1:
+                    print_error("Choose one unambiguous snapshot filename from --list.")
+                    return 1
+                selected = matches[0]
             session.require_rollout()
-            restored = restore_session_backup(session.id, session.rollout_path)
+            restored = restore_session_backup(session.id, session.rollout_path, selected)
             print_success(f"Successfully restored session from: {restored.name}")
             return 0
-        except (OSError, ValueError, RuntimeError) as e:
-            print_error(f"Restore failed: {e!s}")
+        except (OSError, ValueError, RuntimeError):
+            print_error(
+                "Restore failed. Check snapshot integrity, session identity, active writers and backup storage."
+            )
             return 1
 
     elif args.command == "provider":

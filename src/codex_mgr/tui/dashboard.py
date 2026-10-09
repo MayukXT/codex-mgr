@@ -14,19 +14,22 @@ from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import activate_provider
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.runner import launch_codex
-from codex_mgr.core.sessions import list_sessions
 from codex_mgr.tui.doctor_view import render_doctor_report
 from codex_mgr.tui.model_picker import manage_provider_models
 from codex_mgr.tui.portable_view import run_portable_menu
 from codex_mgr.tui.provider_wizard import run_provider_wizard
-from codex_mgr.tui.session_picker import interactive_resume_session
+from codex_mgr.tui.session_picker import (
+    interactive_resume_session,
+    pick_session,
+    pick_snapshot,
+    show_session_details,
+)
 from codex_mgr.utils.display import (
     console,
     get_symbol,
     print_banner,
     print_error,
     print_success,
-    print_warning,
     select_menu,
 )
 
@@ -219,48 +222,32 @@ def _handle_manage_providers() -> None:
 
 def _handle_revert_session() -> None:
     """Interactive rollback of bridged session."""
-    sessions = list_sessions(limit=40)
-    revertable = []
-
-    for s in sessions:
-        backups = list_session_backups(s.id)
-        if backups:
-            revertable.append((s, backups))
-
-    if not revertable:
-        print_warning("No session backups found in ~/.codex/backups/sessions/.")
-        inquirer.text(message="Press [Enter] to return...").execute()
+    session_item = pick_session(include_archived=True, with_backups=True)
+    if session_item is None:
         return
-
-    choices = [
-        Choice(value=item, name=f"{item[0].thread_name[:40]} ({len(item[1])} backups available)")
-        for item in revertable
-    ]
-    choices.append(Choice(value=None, name="← Back (b)"))
-
-    chosen_pair = select_menu(
-        message="Select session to restore from backup:",
-        choices=choices,
-        allow_back=True,
-    )
-
-    if not chosen_pair:
+    show_session_details(session_item)
+    try:
+        session_item.require_rollout()
+        snapshot = pick_snapshot(list_session_backups(session_item.id))
+    except (OSError, ValueError):
+        print_error("Cannot restore this session. Check its identity and duplicate rollout files.")
         return
-
-    session_item, backups = chosen_pair
+    if snapshot is None:
+        return
+    console.print(f"Snapshot: {snapshot.name}", markup=False)
     confirm = inquirer.confirm(
-        message=f"Restore original snapshot from {backups[0].name}? This will overwrite current session state.",
+        message="Restore this snapshot? Current content will be saved first.",
         default=False,
     ).execute()
 
     if confirm and session_item.rollout_path:
         try:
-            restored = restore_session_backup(
-                session_item.id, session_item.rollout_path, backups[0]
-            )
+            restored = restore_session_backup(session_item.id, session_item.rollout_path, snapshot)
             print_success(f"Successfully restored session from: {restored.name}")
-        except (OSError, ValueError, RuntimeError) as exc:
-            print_error(f"Restore failed: {exc!s}")
+        except (OSError, ValueError, RuntimeError):
+            print_error(
+                "Restore failed. Check snapshot integrity, session writers and backup storage."
+            )
         inquirer.text(message="Press [Enter] to continue...").execute()
 
 

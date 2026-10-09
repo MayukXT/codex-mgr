@@ -36,3 +36,5 @@ Never include real keys, authentication files, exported settings, session transc
 Check emitted fields and transport against the supported Codex configuration schema. Do not infer model capability from its name or treat endpoint reachability as authentication/inference success. A new provider requires a tested model, authentication method, and complete request/response workflow.
 
 Run the complete test suite before submitting a change. Public documentation should describe observable behavior, requirements, and limits.
+
+An optional native contract uses Codex 0.159.0 with temporary Codex and SQLite homes, synthetic session history and a loopback fixture endpoint. It reads converted history and checks writer ownership without making an inference request. With that Codex version installed, set `CMGR_NATIVE_CONTRACTS=1` for the test process and run `python -m pytest tests/test_native_codex.py -q`. The default suite skips this contract when the variable is absent.

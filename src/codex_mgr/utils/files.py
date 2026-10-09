@@ -89,13 +89,39 @@ def atomic_write(path: Path, data: bytes, *, expected: bytes | None | object = _
 
 def create_snapshot(source: Path, folder: Path, *, suffix: str, prefix: str = "") -> Path:
     """Copy bytes into a unique snapshot and record a corruption checksum."""
-    data = source.read_bytes()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     destination = folder / f"{prefix}{timestamp}_{uuid.uuid4().hex}{suffix}"
-    atomic_write(destination, data, expected=None)
-    digest = hashlib.sha256(data).hexdigest().encode("ascii") + b"\n"
-    atomic_write(destination.with_name(destination.name + ".sha256"), digest, expected=None)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(prefix=".snapshot.", suffix=".tmp", dir=folder)
+    temporary = Path(name)
+    digest = hashlib.sha256()
+    try:
+        with os.fdopen(fd, "wb") as target, source.open("rb") as original:
+            os.chmod(temporary, 0o600)
+            for chunk in iter(lambda: original.read(1_048_576), b""):
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        if destination.exists():
+            raise FileConflictError("Snapshot path already exists.")
+        os.replace(temporary, destination)
+        atomic_write(
+            destination.with_name(destination.name + ".sha256"),
+            digest.hexdigest().encode("ascii") + b"\n",
+            expected=None,
+        )
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1_048_576), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_snapshot(path: Path) -> bytes:

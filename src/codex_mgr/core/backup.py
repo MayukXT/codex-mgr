@@ -3,35 +3,51 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Optional
 
-from codex_mgr.utils.files import atomic_write, create_snapshot, mutation_lock, read_snapshot
+from codex_mgr.core.rollouts import (
+    canonical_session_id,
+    metadata_from_record,
+    read_session_metadata,
+)
+from codex_mgr.core.session_lock import session_write_guard
+from codex_mgr.utils.files import atomic_write, create_snapshot, read_snapshot
+from codex_mgr.utils.json_edits import JsonEdits
 from codex_mgr.utils.paths import get_backups_dir
 
 
 def _session_directory(session_id: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
-        raise ValueError("Invalid session identifier.")
-    return get_backups_dir() / "sessions" / session_id
+    return get_backups_dir() / "sessions" / canonical_session_id(session_id)
 
 
 def create_session_backup(session_id: str, rollout_path: Path) -> Path:
+    if read_session_metadata(rollout_path).id != canonical_session_id(session_id):
+        raise ValueError("Rollout belongs to a different session.")
     return create_snapshot(rollout_path, _session_directory(session_id), suffix=".rollout.jsonl")
 
 
 def list_session_backups(session_id: str) -> list[Path]:
+    session_id = canonical_session_id(session_id)
     folder = _session_directory(session_id)
-    if not folder.exists():
-        return []
-    return sorted(folder.glob("*.rollout.jsonl"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+    backups = []
+    for source in (folder, folder.parent / session_id.rsplit("-", 1)[-1]):
+        for path in source.glob("*.rollout.jsonl"):
+            try:
+                if path.resolve().parent != source.resolve():
+                    continue
+                if source != folder and read_session_metadata(path).id != session_id:
+                    continue
+                backups.append(path)
+            except (OSError, ValueError):
+                continue
+    return sorted(backups, key=lambda p: p.stat().st_mtime_ns, reverse=True)
 
 
 def restore_session_backup(
-    session_id: str, rollout_path: Path, backup_path: Optional[Path] = None
+    session_id: str, rollout_path: Path, backup_path: Path | None = None
 ) -> Path:
     """Restore an identified snapshot after saving the current file separately."""
+    session_id = canonical_session_id(session_id)
     folder = _session_directory(session_id).resolve()
     if backup_path is None:
         backups = list_session_backups(session_id)
@@ -39,20 +55,41 @@ def restore_session_backup(
             raise FileNotFoundError("No backups found for this session.")
         backup_path = backups[0]
     backup_path = backup_path.resolve()
-    if backup_path.parent != folder:
+    legacy = folder.parent / session_id.rsplit("-", 1)[-1]
+    if backup_path.parent not in {folder, legacy.resolve()}:
         raise ValueError("Snapshot must belong to this session's backup directory.")
     data = read_snapshot(backup_path)
     try:
+        records = 0
+        for line in data.splitlines(keepends=True):
+            if not line.strip():
+                continue
+            parsed = JsonEdits(line.decode("utf-8")).value
+            if not isinstance(parsed, dict) or not isinstance(parsed.get("type"), str):
+                raise TypeError("Snapshot has an invalid rollout record.")
+            if records and parsed["type"] == "session_meta":
+                raise ValueError("Snapshot has ambiguous session metadata.")
+            records += 1
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError) as exc:
+        raise ValueError("Snapshot has invalid or truncated rollout records.") from exc
+    try:
         first = next(line for line in data.splitlines() if line.strip())
-        record = json.loads(first)
-        if record.get("type") != "session_meta" or record.get("payload", {}).get("id") != session_id:
+        record = json.loads(first.decode("utf-8-sig"))
+        # A suffix directory alone cannot establish the identity of a legacy copy.
+        identity_path = rollout_path if backup_path.parent == folder else backup_path
+        if metadata_from_record(record, identity_path).id != session_id:
             raise ValueError("Snapshot belongs to a different session.")
     except (StopIteration, json.JSONDecodeError, AttributeError) as exc:
         raise ValueError("Snapshot has no valid session identity.") from exc
-    with mutation_lock(rollout_path):
+    with session_write_guard(session_id, rollout_path):
+        if read_session_metadata(rollout_path).id != session_id:
+            raise ValueError("Current rollout belongs to a different session.")
         before = rollout_path.read_bytes()
         if before == data:
             return backup_path
         create_session_backup(session_id, rollout_path)
+        if backup_path.parent == legacy.resolve():
+            # Preserve the legacy original and create a verified full-UUID copy.
+            create_snapshot(backup_path, folder, prefix="legacy_", suffix=".rollout.jsonl")
         atomic_write(rollout_path, data, expected=before)
     return backup_path

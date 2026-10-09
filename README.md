@@ -30,7 +30,7 @@ For development, install with `python -m pip install -e ".[dev]"`.
 - Diagnostic checks and local backup tools.
 - A session bridge that changes provider metadata and removes selected encrypted reasoning fields.
 
-The bridge changes saved session files. Removing encrypted reasoning also removes information that cannot be reconstructed from the remaining conversation. Backups are intended to preserve the original file, but the current backup lookup needs repair.
+The bridge changes saved session files. It validates JSONL history and saves a checksummed snapshot before applying a conversion. Removing encrypted reasoning loses information that cannot be reconstructed from readable summaries. Encrypted-only compaction or communication cannot be converted safely and requires the original connection.
 
 ## Commands
 
@@ -47,13 +47,15 @@ cmgr sessions --workspace .  # Sessions created in this directory
 cmgr switch                  # Show provider IDs and the saved active provider
 cmgr doctor                  # Check local configuration and endpoint reachability
 cmgr recover                 # Recover an interrupted configuration change
+cmgr resume SESSION_UUID --to my-api
+cmgr restore SESSION_UUID --list
 cmgr export --output setup.json --sanitize-keys
 cmgr import setup.json
 cmgr --version
 cmgr update --check
 ```
 
-The CLI also includes `resume`, `restore`, and `switch <provider-id>`. Their current implementation has known issues; review the compatibility notes before using them with existing sessions or configuration.
+`cmgr resume` activates the selected connection and model before launching Codex. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
 
 Provider changes preserve TOML comments and unrelated settings, honor the selected Codex profile, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
 
