@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     # doctor
     subparsers.add_parser("doctor", help="Run system diagnostics and verify environment health")
 
+    # version & update
+    p_version = subparsers.add_parser("version", help="Show installed version and check for updates")
+    p_update = subparsers.add_parser("update", help="Check and self-update codex-mgr via pip")
+    p_update.add_argument("--check", action="store_true", help="Only check for updates without installing")
+
     # export
     p_export = subparsers.add_parser("export", help="Export configuration bundle to JSON")
     p_export.add_argument("-o", "--output", default="cmgr-config.json", help="Output file path")
@@ -149,6 +154,41 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == "doctor":
         render_doctor_report()
         return 0
+
+    elif args.command == "version":
+        from codex_mgr.core.version import check_for_updates, get_current_version
+        v = get_current_version()
+        console.print(f"[bold accent]codex-mgr[/] version [bold success]v{v}[/]")
+        with console.status("[dim]Checking for upstream updates...", spinner="dots"):
+            has_up, latest, msg = check_for_updates()
+        if has_up:
+            print_warning(msg)
+            console.print("Run [bold accent]cmgr update[/] to upgrade to the latest release.")
+        else:
+            print_success(msg)
+        return 0
+
+    elif args.command == "update":
+        from codex_mgr.core.version import check_for_updates, perform_self_update
+        with console.status("[dim]Checking for updates on PyPI...", spinner="dots"):
+            has_up, latest, msg = check_for_updates()
+
+        if not has_up:
+            print_success(msg)
+            return 0
+
+        print_warning(msg)
+        if args.check:
+            return 0
+
+        with console.status("[accent]Upgrading codex-mgr via pip...", spinner="dots"):
+            ok, update_msg = perform_self_update()
+        if ok:
+            print_success(update_msg)
+            return 0
+        else:
+            print_error(update_msg)
+            return 1
 
     elif args.command == "export":
         out_path = Path(args.output)

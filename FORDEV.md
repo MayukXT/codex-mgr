@@ -91,3 +91,18 @@ To add a new built-in provider preset:
 2. Add a new `ProviderConfig` to `get_default_presets()`.
 3. Specify `id`, `name`, `base_url`, `wire_api` (`responses` | `chat` | `anthropic_proxy`), and default models.
 4. Add corresponding tests in `tests/test_providers.py`.
+
+---
+
+## 🏷️ Version Bumping & Release Workflow
+1. Bump `__version__` in `src/codex_mgr/__init__.py`.
+2. Bump `version` in `pyproject.toml`.
+3. Run tests: `pytest tests -v`.
+4. Run Graphify update: `graphify extract . --code-only`.
+5. Build distribution artifacts: `pip install build && python -m build`.
+
+---
+
+## 🗺️ Platform Scope & Roadmap
+- **v1.0.0 (Current):** Focused primarily on Windows environments, with full native PowerShell, Windows Command Prompt, Windows Terminal, and AppData binary auto-discovery.
+- **v1.1.0+ (Roadmap):** Extending official testing and packaging to Linux (standardizing on `$XDG_CONFIG_HOME`) and macOS.

@@ -85,6 +85,15 @@ cmgr resume "Recover encrypted"
 cmgr switch agentrouter
 cmgr switch openai
 
+# Check version & query upstream releases
+cmgr version
+
+# Check for updates without upgrading
+cmgr update --check
+
+# Self-update to the latest version via pip
+cmgr update
+
 # Run diagnostic health check
 cmgr doctor
 

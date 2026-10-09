@@ -43,6 +43,7 @@ def run_main_dashboard() -> None:
                 Choice(value="manage", name="➕  Manage Providers        (Add, edit, or configure models)"),
                 Choice(value="new",    name="⚡  Start New Session       (Launch fresh session with active provider)"),
                 Choice(value="doctor", name="🩺  Doctor & Health Check   (Verify configs, paths, and connectivity)"),
+                Choice(value="update", name="✨  Version & Updates       (Check releases and upgrade codex-mgr)"),
                 Choice(value="port",   name="📦  Export & Import Setup   (Backup, share, or migrate configurations)"),
                 Choice(value="revert", name="↩️   Undo / Revert Session   (Restore original session from backup)"),
                 Choice(value="exit",   name="🚪  Exit"),
@@ -71,6 +72,9 @@ def run_main_dashboard() -> None:
         elif action == "doctor":
             render_doctor_report()
             inquirer.text(message="Press [Enter] to return to the menu...").execute()
+
+        elif action == "update":
+            _handle_version_update()
 
         elif action == "port":
             run_portable_menu()
@@ -174,3 +178,41 @@ def _handle_revert_session() -> None:
         except Exception as exc:
             print_error(f"Restore failed: {str(exc)}")
         inquirer.text(message="Press [Enter] to continue...").execute()
+
+
+def _handle_version_update() -> None:
+    """Check version status and offer self-update in the TUI."""
+    from codex_mgr.core.version import check_for_updates, get_current_version, perform_self_update
+
+    v = get_current_version()
+    with console.status("[dim]Checking for upstream releases...", spinner="dots"):
+        has_up, latest, msg = check_for_updates()
+
+    if has_up:
+        panel_msg = (
+            f"Installed Version: [bold accent]v{v}[/]\n"
+            f"Latest Release   : [bold success]v{latest}[/]\n\n"
+            f"A newer version of codex-mgr is available!"
+        )
+        console.print(Panel(panel_msg, title="✨ Update Available", border_style="warning"))
+
+        do_update = inquirer.confirm(
+            message=f"Upgrade codex-mgr to v{latest} now via pip?",
+            default=True
+        ).execute()
+
+        if do_update:
+            with console.status("[accent]Upgrading codex-mgr via pip...", spinner="dots"):
+                ok, update_msg = perform_self_update()
+            if ok:
+                print_success(update_msg)
+            else:
+                print_error(update_msg)
+    else:
+        panel_msg = (
+            f"Installed Version: [bold success]v{v}[/]\n"
+            f"Status           : {msg}"
+        )
+        console.print(Panel(panel_msg, title="Version Status", border_style="success"))
+
+    inquirer.text(message="Press [Enter] to return to the menu...").execute()
