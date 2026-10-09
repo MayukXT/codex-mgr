@@ -87,7 +87,7 @@ def print_banner(
     rows = [
         Text.assemble(("Provider  ", "muted"), (active_provider, "bold accent")),
         Text.assemble(("Model     ", "muted"), active_model),
-        Text.assemble(("Reasoning ", "muted"), reasoning_effort),
+        Text.assemble(("Reasoning ", "muted"), reasoning_effort or "Model default"),
         Text.assemble(("Context   ", "muted"), context),
     ]
     for row in rows:

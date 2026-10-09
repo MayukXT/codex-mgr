@@ -21,4 +21,8 @@ Provider changes preserve comments and unrelated configuration. A selected Codex
 
 `tui.model_availability_nux` stores startup-notice counts, not model access or limits. A model's display name comes from catalog metadata; the desktop app can label a model without that metadata as Custom.
 
+`cmgr model list --refresh` reads the selected connection's catalog. ChatGPT connections use Codex's model API, including its account-aware cache behavior. API connections use their own model endpoint and credentials. Catalog access, inference access and tool compatibility are separate checks. Manual IDs have no assumed context or reasoning capabilities.
+
+To supply custom model labels to Codex 0.159, add named models with `cmgr model add`, then use `cmgr model catalog --output catalog.json --instructions-file instructions.md`. Point `model_catalog_json` in Codex configuration to that file. Review the instruction template: this catalog controls instructions as well as labels. The export preserves existing files and does not install itself automatically.
+
 [Official Codex configuration](https://developers.openai.com/codex/config-advanced/).

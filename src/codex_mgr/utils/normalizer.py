@@ -81,9 +81,7 @@ def mask_api_key(key: str) -> str:
     if len(clean) <= 8:
         return "********"
 
-    prefix = clean[:3] if clean.startswith("sk-") else clean[:2]
-    suffix = clean[-4:]
-    return f"{prefix}...{suffix}"
+    return "[set]"
 
 
 def is_env_var_reference(text: str) -> bool:

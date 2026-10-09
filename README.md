@@ -6,7 +6,7 @@ Manage Codex CLI providers, models, and saved sessions from your terminal.
 
 ## Project status
 
-The current release needs compatibility and recovery fixes before it can be recommended for everyday use. In particular, provider authentication, cross-provider resumption, and the Anthropic adapter have known issues. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
+Compatibility and recovery work is underway for v1.1.0. Cross-provider resumption and protocol adapters still need complete workflow validation before this version can be recommended for everyday use. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
 
 ## Install from source
 
@@ -38,6 +38,10 @@ The bridge changes saved session files. Removing encrypted reasoning also remove
 cmgr --help
 cmgr                         # Open the terminal menu
 cmgr provider add            # Configure a provider
+cmgr provider edit my-api    # Edit a saved connection
+cmgr provider test my-api    # Check catalog access; no inference request
+cmgr model list --refresh    # Load the active connection's catalog
+cmgr model use MODEL_ID      # Select an exact model ID
 cmgr switch                  # Show provider IDs and the saved active provider
 cmgr doctor                  # Check local configuration and endpoint reachability
 cmgr recover                 # Recover an interrupted configuration change
@@ -63,9 +67,11 @@ Codex configuration separates the selected model from the connection used to run
 
 For a custom connection, the ID must match `model_provider`. A friendly provider name does not determine the model or grant access to it. Current Codex supports the Responses protocol for custom providers; a Chat Completions endpoint needs a compatible adapter. See [Codex configuration](https://developers.openai.com/codex/config-advanced/).
 
-Signing in with ChatGPT and using an OpenAI API key are separate authentication methods. The current manager groups both under one OpenAI preset; explicit choices and correct credential handoff are planned. The Anthropic preset exists, but its adapter is not ready for Codex Responses traffic.
+The wizard offers separate ChatGPT sign-in, OpenAI API-key, and Anthropic API-key connections. Codex handles ChatGPT login and refresh. The Anthropic template can be saved, but activation requires the adapter work described in the compatibility notes.
 
 Provider presets are configuration starting points. A preset or a successful model-list request does not establish that a model supports the complete coding workflow. Model IDs and capabilities should be checked against the selected provider's current catalog.
+
+Model lists are searchable without a fixed result cutoff. Unknown context limits and reasoning options stay unknown. `cmgr model catalog` can export custom Codex labels; it requires an explicit instruction-template file because Codex catalogs also affect instructions. See [configuration](docs/wiki/Configuration.md).
 
 ## Files and privacy
 
@@ -78,7 +84,7 @@ By default, the manager uses `~/.codex/`; it respects `CODEX_HOME` when configur
 | `sessions/` | Codex session rollouts |
 | `backups/` | Copies of configuration, settings, and modified sessions |
 
-Pasted keys are stored as plaintext in local settings and may also appear in config backups. Export includes keys unless `--sanitize-keys` is supplied. Sanitized exports remove the dedicated token field; endpoints and other user-entered fields still need review before sharing.
+Pasted keys are stored as plaintext in local settings and may also appear in config backups. Export removes literal keys, literal HTTP headers and catalog identity by default. Environment references remain for portability. `--include-secrets` explicitly creates a private export with plaintext credentials. Review endpoint names, labels, environment references and custom instruction templates before sharing.
 
 The manager makes network requests for provider checks, model lists, and update checks. Codex sends prompts and code to the selected inference endpoint when you run a session.
 

@@ -60,6 +60,7 @@ def _import_configuration(settings: CmgrSettings) -> None:
     settings.active_provider_id = existing.id
     if effective.get("model"):
         existing.default_model = effective["model"]
+        existing.model_selected = True
     if effective.get("model_reasoning_effort"):
         existing.reasoning_effort = effective["model_reasoning_effort"]
     existing.context_window_limit = effective.get("model_context_window")
@@ -102,11 +103,10 @@ def load_settings() -> CmgrSettings:
     path = get_cmgr_settings_path()
     raw = read_optional(path)
     settings = (
-        _read_valid(raw) if raw is not None else CmgrSettings(providers=get_default_presets())
+        _read_valid(raw)
+        if raw is not None
+        else CmgrSettings(providers={"openai": get_default_presets()["openai"]})
     )
-    for pid, preset in get_default_presets().items():
-        if pid not in settings.providers:
-            settings.providers[pid] = preset
     _import_configuration(settings)
     settings._source_bytes = raw
     settings._loaded = True

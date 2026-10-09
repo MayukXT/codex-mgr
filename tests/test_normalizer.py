@@ -34,11 +34,10 @@ def test_sanitize_api_key_whitespace_and_quotes():
 
 
 def test_mask_api_key():
-    key = "sk-43LDpfHe93CCWv4u5dhjeLFU583nkEmACGDrlNBtmeK1hmK3"
+    key = "synthetic-private-credential"
     masked = mask_api_key(key)
-    assert masked.startswith("sk-...")
-    assert masked.endswith("hmK3")
-    assert "43LDpfHe" not in masked
+    assert masked == "[set]"
+    assert "private" not in masked
 
 
 def test_is_env_var_reference():

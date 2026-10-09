@@ -1,8 +1,4 @@
-"""Data models and schemas for codex-mgr settings, providers, and models.
-
-Designed for 2026 model generation with full context window tracking,
-multi-tier reasoning levels (up to 'ultra'), and portable configuration.
-"""
+"""Validated settings and provider-reported model metadata."""
 
 from __future__ import annotations
 
@@ -18,12 +14,24 @@ class ModelInfo(BaseModel):
 
     id: str = Field(description="Unique model slug/identifier, e.g. 'gpt-6.1-sol'")
     name: str = Field(description="Human-friendly display name, e.g. 'GPT-6.1 Sol'")
-    context_window: int = Field(default=256000, description="Context window capacity in tokens")
+    context_window: int | None = Field(default=None, gt=0)
     supported_reasoning_levels: list[str] = Field(
-        default_factory=lambda: ["low", "medium", "high", "xhigh", "max"],
+        default_factory=list,
         description="Supported reasoning tiers",
     )
     is_custom: bool = Field(default=False, description="Whether added manually by the user")
+    default_reasoning_effort: str | None = None
+    reasoning_supported: bool | None = None
+    tools_supported: bool | None = None
+    input_modalities: list[str] = Field(default_factory=list)
+    wire_api: Literal["responses", "chat", "anthropic_proxy"] | None = None
+
+    @field_validator("id", "name")
+    @classmethod
+    def printable(cls, value):
+        if not value.strip() or any(ord(c) < 32 for c in value):
+            raise ValueError("Model identifiers and labels must contain printable text.")
+        return value.strip()
 
 
 class ProviderConfig(BaseModel):
@@ -49,12 +57,16 @@ class ProviderConfig(BaseModel):
     http_headers: dict[str, str] | None = Field(default=None, repr=False)
     env_http_headers: dict[str, str] | None = Field(default=None, repr=False)
     default_model: str = Field(default="gpt-6.1-sol", description="Default model slug")
-    reasoning_effort: str = Field(default="medium", description="Default reasoning effort")
+    reasoning_effort: str | None = Field(default=None, description="Explicit reasoning effort")
     proxy_port: int | None = Field(
         default=4099, description="Local loopback port for Anthropic proxy if applicable"
     )
     is_preset: bool = Field(default=False, description="Whether built-in default preset")
     models: list[ModelInfo] = Field(default_factory=list, description="Associated models list")
+    model_selected: bool = True
+    catalog_source: str | None = None
+    catalog_fetched_at: str | None = None
+    catalog_scope: str | None = Field(default=None, repr=False)
 
     # Advanced granular model controls
     context_window_limit: int | None = Field(
@@ -90,6 +102,8 @@ class ProviderConfig(BaseModel):
     @field_validator("name", "default_model", "reasoning_effort")
     @classmethod
     def nonempty(cls, value):
+        if value is None:
+            return value
         if not value.strip() or any(ord(c) < 32 for c in value):
             raise ValueError("Value must contain printable text.")
         return value.strip()
@@ -100,9 +114,26 @@ class ProviderConfig(BaseModel):
         parsed = urlparse(value)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.fragment:
             raise ValueError("Use a complete HTTP or HTTPS endpoint without a fragment.")
-        if parsed.username or parsed.password:
+        if parsed.username or parsed.password or parsed.query:
             raise ValueError("Store credentials separately from the endpoint URL.")
         return value.rstrip("/")
+
+    @field_validator("proxy_port")
+    @classmethod
+    def valid_port(cls, value):
+        if value is not None and not 1024 <= value <= 65535:
+            raise ValueError("Adapter port must be between 1024 and 65535.")
+        return value
+
+    @field_validator("http_headers", "env_http_headers")
+    @classmethod
+    def valid_headers(cls, value):
+        for header, content in (value or {}).items():
+            if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", header) or any(
+                ord(c) < 32 for c in content
+            ):
+                raise ValueError("Headers must use valid names and printable values.")
+        return value
 
 
 class AppPreferences(BaseModel):
@@ -140,10 +171,19 @@ class CmgrSettings(BaseModel):
 class ExportBundle(BaseModel):
     """Portable export package schema for team/migration sharing."""
 
-    version: int = 1
+    model_config = ConfigDict(extra="forbid")
+    version: Literal[1] = 1
     exported_at: str
     active_provider_id: str
     providers: dict[str, ProviderConfig]
     is_sanitized: bool = Field(
-        default=False, description="True if sensitive API keys were stripped during export"
+        default=True, description="True if credential fields were removed during export"
     )
+
+    @model_validator(mode="after")
+    def valid_identity(self):
+        if self.active_provider_id not in self.providers or any(
+            pid != provider.id for pid, provider in self.providers.items()
+        ):
+            raise ValueError("Bundle identities must match their provider definitions.")
+        return self

@@ -60,6 +60,17 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
     doc = parse_configuration(raw)
     # Revalidate mutable settings before producing any side effects.
     provider = ProviderConfig.model_validate(provider.model_dump())
+    if not provider.model_selected:
+        raise ConfigurationError("Choose an exact model ID before activating this template.")
+    if (
+        provider.auth_type in {"bearer_token", "env_var"}
+        and not provider.auth_token
+        and not provider.http_headers
+        and not provider.env_http_headers
+    ):
+        raise ConfigurationError(
+            "Supply the selected API credential, or explicitly choose no authentication."
+        )
     if provider.wire_api != "responses":
         raise ConfigurationError(
             "This connection needs a verified Responses adapter before activation."
@@ -92,7 +103,14 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
         and effort not in model.supported_reasoning_levels
     ):
         raise ConfigurationError("The selected model does not advertise this reasoning effort.")
-    target["model_reasoning_effort"] = effort
+    if effort is None:
+        if target is not doc and doc.get("model_reasoning_effort") is not None:
+            raise ConfigurationError(
+                "This profile inherits global reasoning. Choose an explicit effort or remove the global setting."
+            )
+        target.pop("model_reasoning_effort", None)
+    else:
+        target["model_reasoning_effort"] = effort
     for key in ("model_reasoning", "stream", "max_tokens"):
         target.pop(key, None)
     if provider.context_window_limit is not None:

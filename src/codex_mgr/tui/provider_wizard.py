@@ -1,285 +1,163 @@
-"""6-Step chronological guided provider onboarding wizard.
-
-Empowers non-technical users to configure any model provider endpoint,
-probe available models with zero token spend, and test connection health.
-"""
+"""Concise provider setup and editing with distinct credential paths."""
 
 from __future__ import annotations
 
+import re
+
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
-from rich.panel import Panel
 
-from codex_mgr.config.schema import ModelInfo, ProviderConfig
-from codex_mgr.config.settings import load_settings, save_settings
-from codex_mgr.core.activation import activate_provider
-from codex_mgr.core.models import probe_remote_models, test_provider_connectivity
-from codex_mgr.core.providers import get_default_presets
-from codex_mgr.utils.display import (
-    console,
-    print_error,
-    print_success,
-    print_warning,
-    select_menu,
-)
-from codex_mgr.utils.normalizer import normalize_base_url, sanitize_api_key
+from codex_mgr.config.schema import ProviderConfig
+from codex_mgr.config.settings import load_settings
+from codex_mgr.core.auth import codex_login_status, login_with_codex, resolve_credential
+from codex_mgr.core.models import refresh_provider_models, select_model
+from codex_mgr.core.providers import get_default_presets, store_provider
+from codex_mgr.utils.display import console, print_error, print_success, print_warning, select_menu
 
 
-def run_provider_wizard() -> ProviderConfig | None:
-    """Execute the chronological 6-step provider configuration wizard."""
-    console.clear()
-    console.print(
-        Panel(
-            "[bold #38BDF8]Configure a New AI Model Provider[/]\n"
-            "Connect OpenAI, Anthropic, OpenRouter, DeepSeek, or local models in 6 simple steps.",
-            border_style="#475569",
-        )
-    )
+def _text(message, default=""):
+    return inquirer.text(message=message, default=default).execute().strip()
 
-    presets = get_default_presets()
 
-    # Step 1: Template selection
-    template_choices = [
-        Choice(value="openai", name="OpenAI"),
-        Choice(value="openrouter", name="OpenRouter"),
-        Choice(value="nvidia", name="NVIDIA NIM"),
-        Choice(value="opencode", name="OpenCode Zen API"),
-        Choice(value="anthropic", name="Anthropic"),
-        Choice(value="agentrouter", name="AgentRouter"),
-        Choice(value="deepseek", name="DeepSeek"),
-        Choice(value="groq", name="Groq"),
-        Choice(value="gemini", name="Google Gemini"),
-        Choice(value="ollama", name="Ollama (Local Offline)"),
-        Choice(value="lmstudio", name="LM Studio (Local Offline)"),
-        Choice(value="custom", name="Custom Provider"),
-        Choice(value=None, name="← Back (b)"),
+def choose_model(provider):
+    """Search the complete catalog or enter an exact ID."""
+    choices = [
+        Choice(value=m.id, name=f"{m.name} ({m.id})" if m.name != m.id else m.id)
+        for m in provider.models
     ]
-
-    selected_template = select_menu(
-        message="[Step 1/6] Choose a provider template:",
-        choices=template_choices,
-        default="openrouter",
-        allow_back=True,
-    )
-
-    if not selected_template:
-        return None
-
-    template_cfg = presets.get(selected_template)
-
-    # Step 2: Name and Alias
-    default_name = template_cfg.name if template_cfg else "My Custom Provider"
-    provider_name = (
-        inquirer.text(
-            message="[Step 2/6] Enter a friendly name for this provider:", default=default_name
-        )
-        .execute()
-        .strip()
-        or default_name
-    )
-
-    default_id = (
-        selected_template
-        if selected_template != "custom"
-        else provider_name.lower().replace(" ", "_")
-    )
-    provider_id = (
-        inquirer.text(message="Enter a short identifier slug:", default=default_id)
-        .execute()
-        .strip()
-        or default_id
-    )
-
-    # Step 3: Base URL & Wire API
-    default_url = template_cfg.base_url if template_cfg else "https://api.example.com/v1"
-    raw_url = (
-        inquirer.text(message="[Step 3/6] Enter the provider Base URL:", default=default_url)
-        .execute()
-        .strip()
-    )
-
-    wire_api = template_cfg.wire_api if template_cfg else "responses"
-    if selected_template == "custom":
-        wire_api = inquirer.select(
-            message="Select the wire protocol:",
-            choices=[
-                Choice(
-                    value="responses", name="responses (Codex Native Responses API - Recommended)"
-                ),
-                Choice(value="chat", name="chat (Standard OpenAI /v1/chat/completions)"),
-            ],
-            default="responses",
-        ).execute()
-
-    clean_url = normalize_base_url(raw_url, wire_api)
-
-    # Step 4: Authentication
-    auth_token = None
-    if selected_template == "openai":
-        from codex_mgr.core.auth import codex_login_status, login_with_codex
-
-        auth_choices = [Choice(value="oauth", name="ChatGPT sign-in")]
-        auth_choices.extend(
-            [
-                Choice(value="paste", name="Paste custom OpenAI API key (sk-...)"),
-                Choice(value="env", name="Reference environment variable ($OPENAI_API_KEY)"),
-            ]
-        )
-        auth_mode = inquirer.select(
-            message="[Step 4/6] Select OpenAI authentication method:",
-            choices=auth_choices,
-            default=auth_choices[0].value,
-        ).execute()
-
-        if auth_mode == "paste":
-            raw_key = inquirer.secret(message="Enter your OpenAI API Key:").execute()
-            auth_token = sanitize_api_key(raw_key)
-        elif auth_mode == "env":
-            env_var = (
-                inquirer.text(
-                    message="Enter the environment variable name:", default="$OPENAI_API_KEY"
-                )
-                .execute()
-                .strip()
-            )
-            auth_token = env_var if env_var.startswith("$") else f"${env_var}"
-        else:
-            status = codex_login_status()
-            if not (status.signed_in and status.method == "chatgpt"):
-                if inquirer.confirm(message="Sign in with Codex now?", default=True).execute():
-                    signed_in, message = login_with_codex()
-                    if not signed_in:
-                        print_warning(message)
-                        return None
-                else:
-                    print_warning("Sign-in pending. Run codex login before launching.")
-            auth_token = None
-    elif selected_template not in ("ollama", "lmstudio"):
-        auth_mode = inquirer.select(
-            message="[Step 4/6] How would you like to provide the API key?",
-            choices=[
-                Choice(value="paste", name="API key (stored locally as plaintext)"),
-                Choice(
-                    value="env", name="Reference an environment variable (e.g. $OPENROUTER_KEY)"
-                ),
-            ],
-            default="paste",
-        ).execute()
-
-        if auth_mode == "paste":
-            raw_key = inquirer.secret(message="Enter your API Key / Bearer Token:").execute()
-            auth_token = sanitize_api_key(raw_key)
-        else:
-            default_env = f"${provider_id.upper()}_API_KEY"
-            env_var = (
-                inquirer.text(message="Enter the environment variable name:", default=default_env)
-                .execute()
-                .strip()
-            )
-            auth_token = env_var if env_var.startswith("$") else f"${env_var}"
-
-    # Step 5: Zero-Token Model Discovery
-    if selected_template == "openai" and not auth_token and template_cfg:
-        ok = True
-        probed_models = template_cfg.models
-        err = None
-    else:
-        console.print("\n[dim]Probing endpoint for available models (zero token cost)...[/]")
-        ok, probed_models, err = probe_remote_models(clean_url, auth_token, wire_api)
-
-    models_list = []
-    default_model = template_cfg.default_model if template_cfg else "default-model"
-
-    if ok and probed_models:
-        print_success(f"Discovered {len(probed_models)} available models on the endpoint!")
-        model_choices = [Choice(value=m.id, name=f"{m.name} ({m.id})") for m in probed_models[:20]]
-        model_choices.append(
-            Choice(value="__custom__", name="[+] Enter another model ID manually...")
-        )
-
-        selected_model_slug = inquirer.select(
-            message="[Step 5/6] Select the default model:",
-            choices=model_choices,
-            default=model_choices[0].value,
-        ).execute()
-
-        if selected_model_slug == "__custom__":
-            custom_mid = inquirer.text(message="Enter the Model ID:").execute().strip()
-            default_model = custom_mid
-            models_list.append(ModelInfo(id=custom_mid, name=custom_mid, is_custom=True))
-        else:
-            default_model = selected_model_slug
-            models_list = probed_models
-    else:
-        if err:
-            print_warning(f"Note: {err}")
-        custom_mid = (
-            inquirer.text(
-                message="[Step 5/6] Enter the default Model ID to use:", default=default_model
-            )
-            .execute()
-            .strip()
-            or default_model
-        )
-        default_model = custom_mid
-        models_list.append(ModelInfo(id=custom_mid, name=custom_mid, is_custom=True))
-
-    reasoning_effort = inquirer.select(
-        message="Select default reasoning effort:",
-        choices=[
-            Choice(value="low", name="low (Faster, lighter thinking)"),
-            Choice(value="medium", name="medium (Balanced speed & depth)"),
-            Choice(value="high", name="high (Deep reasoning for complex code)"),
-            Choice(value="max", name="max (Maximum reasoning depth)"),
-            Choice(value="ultra", name="ultra (Agentic delegation / maximum deliberation)"),
-        ],
-        default="medium",
+    choices += [Choice(value="__manual__", name="Enter model ID"), Choice(value=None, name="Back")]
+    chosen = inquirer.fuzzy(
+        message="Model:", choices=choices, max_height="60%", mandatory=False
     ).execute()
+    if not chosen:
+        return False
+    if chosen == "__manual__":
+        chosen = _text("Exact model ID:", provider.default_model if provider.model_selected else "")
+        if not chosen:
+            return False
+    model = select_model(provider, chosen)
+    if provider.id.startswith("opencode") and model.wire_api is None:
+        # Zen uses different protocols per model. Require an explicit choice.
+        provider.wire_api = (
+            select_menu(
+                "Protocol documented for this model:",
+                [
+                    Choice("responses", "Responses"),
+                    Choice("anthropic_proxy", "Anthropic Messages"),
+                    Choice("chat", "Chat Completions"),
+                ],
+                allow_back=False,
+            )
+            or "responses"
+        )
+    return True
 
-    # Step 6: Connection Health Check & Activation
-    resolved_auth_type = "bearer_token"
-    if selected_template in ("ollama", "lmstudio"):
-        resolved_auth_type = "none"
-    elif selected_template == "openai" and not auth_token:
-        resolved_auth_type = "official_oauth"
 
-    new_provider = ProviderConfig(
-        id=provider_id,
-        name=provider_name,
-        base_url=clean_url,
-        wire_api=wire_api,
-        auth_type=resolved_auth_type,
-        auth_token=auth_token,
-        default_model=default_model,
-        reasoning_effort=reasoning_effort,
-        is_preset=False,
-        models=models_list,
-    )
-
-    console.print("\n[dim]Performing final reachability handshake...[/]")
-    is_healthy, status_msg, latency = test_provider_connectivity(new_provider)
-
-    if is_healthy:
-        print_success(f"[Step 6/6] Health Check PASSED: {status_msg} ({latency}ms)")
-    else:
-        print_warning(f"[Step 6/6] Notice: {status_msg}")
-
-    # Save to settings
+def run_provider_wizard(existing_id=None):
     settings = load_settings()
-    settings.providers[provider_id] = new_provider
-    save_settings(settings, create_backup=True)
-    print_success(f"Provider '{provider_name}' saved successfully to ~/.codex/cmgr.json!")
-
-    # Prompt to activate
-    activate_now = inquirer.confirm(
-        message="Would you like to switch to this provider right now?", default=True
-    ).execute()
-
-    if activate_now:
-        switch_ok, switch_msg = activate_provider(provider_id)
-        if switch_ok:
-            print_success(f"Active provider updated: {switch_msg}")
-        else:
-            print_error(f"Failed to switch in config.toml: {switch_msg}")
-
-    return new_provider
+    existing = settings.providers.get(existing_id) if existing_id else None
+    if existing_id and existing is None:
+        print_error("Connection not found.")
+        return None
+    console.print("\n[bold]Edit connection[/]" if existing else "\n[bold]Add connection[/]")
+    if existing:
+        provider = existing.model_copy(deep=True)
+    else:
+        presets = get_default_presets()
+        selected = select_menu(
+            "Connection:",
+            [Choice(pid, p.name) for pid, p in presets.items()]
+            + [Choice("custom", "Custom endpoint"), Choice(None, "Back")],
+        )
+        if not selected:
+            return None
+        provider = (
+            presets[selected].model_copy(deep=True)
+            if selected in presets
+            else ProviderConfig(
+                id="custom",
+                name="Custom endpoint",
+                base_url="https://api.example/v1",
+                model_selected=False,
+            )
+        )
+        suggested = provider.id
+        suffix = 2
+        while suggested in settings.providers and settings.providers[suggested].model_selected:
+            suggested = f"{provider.id}_{suffix}"
+            suffix += 1
+        provider.id = _text("Connection ID:", suggested)
+        provider.is_preset = False
+    provider.name = _text("Name:", provider.name)
+    if provider.auth_type != "official_oauth":
+        provider.base_url = _text("Endpoint:", provider.base_url)
+        provider.wire_api = select_menu(
+            "Protocol:",
+            [
+                Choice("responses", "Responses"),
+                Choice("chat", "Chat Completions"),
+                Choice("anthropic_proxy", "Anthropic Messages"),
+            ],
+            default=provider.wire_api,
+            allow_back=False,
+        )
+        mode = select_menu(
+            "Credentials:",
+            [
+                Choice("env", "Environment variable"),
+                Choice("paste", "Paste key (plaintext storage)"),
+                Choice("none", "No authentication"),
+                Choice("keep", "Keep current") if existing else Choice(None, "Back"),
+            ],
+            default="env" if provider.auth_type != "none" else "none",
+        )
+        if not mode:
+            return None
+        if mode == "env":
+            reference = _text(
+                "Variable name:",
+                provider.auth_token
+                if provider.auth_token and provider.auth_token.startswith("$")
+                else f"${provider.id.upper()}_API_KEY",
+            )
+            if not re.fullmatch(r"\$?[A-Za-z_][A-Za-z0-9_]*", reference):
+                print_error("Enter a valid environment variable name.")
+                return None
+            provider.auth_token = "$" + reference.lstrip("$")
+            provider.auth_type = "env_var"
+        elif mode == "paste":
+            provider.auth_token = inquirer.secret(message="API key:").execute().strip()
+            if not provider.auth_token:
+                print_error("A key is required.")
+                return None
+            resolve_credential(provider.auth_token)
+            provider.auth_type = "bearer_token"
+        elif mode == "none":
+            provider.auth_type, provider.auth_token = "none", None
+    else:
+        status = codex_login_status()
+        if not (status.signed_in and status.method == "chatgpt"):
+            if inquirer.confirm(message="Sign in with Codex now?", default=True).execute():
+                ok, message = login_with_codex()
+                if not ok:
+                    print_error(message)
+                    return None
+            else:
+                print_warning("Run codex login before launching.")
+    try:
+        provider = ProviderConfig.model_validate(provider.model_dump())
+    except ValueError:
+        print_error("Invalid connection. Check ID, endpoint, port and credentials.")
+        return None
+    if inquirer.confirm(message="Load model catalog?", default=True).execute():
+        ok, _, error = refresh_provider_models(provider)
+        if not ok:
+            print_warning(error or "Catalog unavailable; enter a model ID.")
+    if not choose_model(provider):
+        return None
+    activate = inquirer.confirm(message="Use this connection now?", default=True).execute()
+    ok, message = store_provider(
+        settings, provider, replace=existing is not None, activate=activate
+    )
+    (print_success if ok else print_error)(message)
+    return provider if ok else None

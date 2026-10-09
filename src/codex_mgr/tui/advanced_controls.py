@@ -27,7 +27,9 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
             if provider.context_window_limit
             else "Model default"
         )
-        console.print(f"Context: {context}    Reasoning: {escape(provider.reasoning_effort)}\n")
+        console.print(
+            f"Context: {context}    Reasoning: {escape(provider.reasoning_effort or 'Model default')}\n"
+        )
         action = select_menu(
             message="Model settings",
             choices=[
@@ -70,14 +72,13 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
                 effort = (
                     inquirer.text(
                         message="Provider-supported reasoning value",
-                        default=provider.reasoning_effort,
+                        default=provider.reasoning_effort or "",
                     )
                     .execute()
                     .strip()
                 )
-            if effort:
-                provider.reasoning_effort = effort
-                provider.reasoning_enabled = effort != "none"
+            provider.reasoning_effort = effort or None
+            provider.reasoning_enabled = effort != "none"
         elif action == "save":
             ok, message = apply_settings(
                 settings,

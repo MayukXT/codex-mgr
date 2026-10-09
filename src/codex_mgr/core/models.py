@@ -1,157 +1,285 @@
-"""Dynamic model discovery, local cache synchronization, and zero-token health probing.
-
-Consumes 0 prompt tokens by querying standard metadata endpoints (/v1/models)
-and syncs natively with Codex's local models_cache.json.
-"""
+"""Model catalogs and authentication checks; listing never proves inference support."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
 
 import httpx
+from pydantic import ValidationError
 
+from codex_mgr import __version__
 from codex_mgr.config.schema import ModelInfo, ProviderConfig
-from codex_mgr.utils.normalizer import normalize_base_url
-from codex_mgr.utils.paths import get_models_cache_path
+from codex_mgr.core.auth import CredentialError, resolve_credential, verify_openai_connectivity
+from codex_mgr.core.rpc import CodexReader, CodexRpcError
+from codex_mgr.utils.paths import get_auth_json_path, get_models_cache_path
 
 
-def sync_models_from_local_cache() -> List[ModelInfo]:
-    """Extract models from the local ~/.codex/models_cache.json file if available."""
-    cache_path = get_models_cache_path()
-    if not cache_path.exists():
+def _positive(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def parse_model(item: dict) -> ModelInfo:
+    identifier = item.get("model") or item.get("slug") or item.get("id")
+    levels = item.get("supportedReasoningEfforts", item.get("supported_reasoning_levels", []))
+    efforts = []
+    if isinstance(levels, list):
+        for level in levels:
+            effort = (
+                (level.get("reasoningEffort") or level.get("effort"))
+                if isinstance(level, dict)
+                else level
+            )
+            if isinstance(effort, str) and effort and effort not in efforts:
+                efforts.append(effort)
+    capabilities = item.get("capabilities") or {}
+    if not isinstance(capabilities, dict):
+        capabilities = {}
+    effort_caps = capabilities.get("effort", {})
+    if isinstance(effort_caps, dict):
+        efforts.extend(
+            key
+            for key, value in effort_caps.items()
+            if isinstance(value, dict) and value.get("supported") is True and key not in efforts
+        )
+    protocol = item.get("wire_api")
+    if protocol not in {"responses", "chat", "anthropic_proxy"}:
+        protocol = None
+    return ModelInfo(
+        id=identifier,
+        name=item.get("displayName") or item.get("display_name") or item.get("name") or identifier,
+        context_window=_positive(
+            item.get("context_window") or item.get("context_length") or item.get("max_input_tokens")
+        ),
+        supported_reasoning_levels=efforts,
+        default_reasoning_effort=item.get("defaultReasoningEffort")
+        or item.get("default_reasoning_level"),
+        reasoning_supported=bool(efforts)
+        if "supportedReasoningEfforts" in item or "supported_reasoning_levels" in item
+        else None,
+        tools_supported=item.get("tools_supported")
+        if isinstance(item.get("tools_supported"), bool)
+        else None,
+        input_modalities=item.get("inputModalities") or item.get("input_modalities") or [],
+        wire_api=protocol,
+    )
+
+
+def _models(items):
+    result = {}
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or item.get("hidden")
+            or item.get("visibility") == "hide"
+            or item.get("lifecycle") in {"retired", "deprecated"}
+        ):
+            continue
+        try:
+            model = parse_model(item)
+        except (ValueError, TypeError, ValidationError):
+            continue
+        result[model.id] = model
+    return list(result.values())
+
+
+def sync_models_from_local_cache(
+    *, identity=None, client_version=None, ttl=3600
+) -> list[ModelInfo]:
+    """Use a Codex cache only with an explicitly verified identity and version."""
+    if not identity or not client_version:
+        return []
+    try:
+        data = json.loads(get_models_cache_path().read_text(encoding="utf-8"))
+        stamp = datetime.fromisoformat(data["fetched_at"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        if (
+            data.get("identity") != identity
+            or data.get("client_version") != client_version
+            or not 0 <= age <= ttl
+        ):
+            return []
+        return _models(data.get("models", []))
+    except (OSError, ValueError, TypeError, KeyError):
         return []
 
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        raw_models = data.get("models", [])
-        discovered: List[ModelInfo] = []
 
-        for m in raw_models:
-            slug = m.get("slug")
-            name = m.get("display_name", slug)
-            levels = [lvl.get("effort") for lvl in m.get("supported_reasoning_levels", []) if "effort" in lvl]
-            if not levels:
-                levels = ["low", "medium", "high", "xhigh", "max"]
-
-            discovered.append(ModelInfo(
-                id=slug,
-                name=name,
-                context_window=512000 if "6" in slug else 256000,
-                supported_reasoning_levels=levels,
-                is_custom=False
-            ))
-        return discovered
-    except Exception:
-        return []
-
-
-def probe_remote_models(
-    base_url: str,
-    auth_token: Optional[str] = None,
-    wire_api: str = "responses"
-) -> Tuple[bool, List[ModelInfo], Optional[str]]:
-    """Probe a remote provider endpoint for available models using zero prompt tokens.
-
-    Returns:
-        (success, list_of_models, error_message)
-    """
-    clean_url = normalize_base_url(base_url, wire_api)
-    models_endpoint = f"{clean_url}/models"
-
-    headers = {"User-Agent": "codex-mgr/1.0.0"}
-    if auth_token and not auth_token.startswith("$"):
-        headers["Authorization"] = f"Bearer {auth_token}"
-
-    try:
-        with httpx.Client(timeout=6.0, follow_redirects=True) as client:
-            resp = client.get(models_endpoint, headers=headers)
-
-            if resp.status_code == 200:
-                body = resp.json()
-                raw_list = body.get("data", []) or body.get("models", [])
-                models: List[ModelInfo] = []
-
-                for item in raw_list:
-                    mid = item.get("id") or item.get("name")
-                    if mid:
-                        models.append(ModelInfo(
-                            id=mid,
-                            name=item.get("display_name") or mid,
-                            context_window=item.get("context_window", 256000),
-                            is_custom=False
-                        ))
-                return True, models, None
-
-            if resp.status_code == 401:
-                return False, [], "Invalid API Key or Bearer Token (HTTP 401 Unauthorized)."
-            if resp.status_code == 403:
-                return False, [], "Forbidden: Access denied to this endpoint (HTTP 403 Forbidden)."
-            if resp.status_code == 404:
-                return False, [], "The /models endpoint is not supported by this server (HTTP 404)."
-            if resp.status_code == 429:
-                return False, [], "Rate limit reached or quota depleted (HTTP 429)."
-
-            return False, [], f"Server returned unexpected HTTP status: {resp.status_code}"
-
-    except httpx.ConnectError:
-        return False, [], f"Could not connect to {clean_url}. Is the service running?"
-    except httpx.TimeoutException:
-        return False, [], "Connection timed out after 6 seconds."
-    except Exception as exc:
-        return False, [], f"Network error: {str(exc)}"
-
-
-def test_provider_connectivity(provider: ProviderConfig) -> Tuple[bool, str, int]:
-    """Perform a zero-token reachability and latency health test for a provider.
-
-    Returns:
-        (is_healthy, status_message, latency_ms)
-    """
-    start_time = time.perf_counter()
-
-    # If Anthropic direct, test official endpoint or local proxy
+def provider_headers(provider: ProviderConfig) -> dict[str, str]:
+    headers = {"User-Agent": f"codex-mgr/{__version__}"}
+    token = resolve_credential(provider.auth_token)
+    if token:
+        if provider.wire_api == "anthropic_proxy":
+            headers["x-api-key"] = token
+        else:
+            headers["Authorization"] = f"Bearer {token}"
     if provider.wire_api == "anthropic_proxy":
-        target_url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": provider.auth_token or "",
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
+        headers["anthropic-version"] = "2023-06-01"
+    headers.update(provider.http_headers or {})
+    for header, variable in (provider.env_http_headers or {}).items():
+        value = resolve_credential("$" + variable)
+        if value:
+            headers[header] = value
+    return headers
+
+
+def catalog_scope(provider):
+    """Opaque identity changes when the endpoint, transport or credentials change."""
+    if provider.auth_type == "official_oauth":
         try:
-            with httpx.Client(timeout=5.0) as client:
-                # Minimal probe: empty payload to test authentication handshake
-                resp = client.post(target_url, headers=headers, json={"max_tokens": 1, "messages": []})
-                latency_ms = int((time.perf_counter() - start_time) * 1000)
+            credential = get_auth_json_path().read_bytes()
+        except OSError:
+            return None  # Keyring identity cannot be established from this file.
+    else:
+        try:
+            credential = json.dumps(provider_headers(provider), sort_keys=True).encode()
+        except CredentialError:
+            return None
+    return hashlib.sha256(
+        provider.base_url.encode() + provider.wire_api.encode() + credential
+    ).hexdigest()
 
-                # HTTP 400 with invalid messages array confirms API key is authentic!
-                if resp.status_code in (200, 400):
-                    return True, "Anthropic API connection verified (Handshake OK)", latency_ms
-                if resp.status_code == 401:
-                    return False, "Invalid Anthropic API Key (HTTP 401)", latency_ms
-                return False, f"Unexpected response: HTTP {resp.status_code}", latency_ms
-        except Exception as e:
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
-            return False, f"Connection failed: {str(e)}", latency_ms
 
-    # Standard OpenAI / Router endpoints
-    ok, models, err = probe_remote_models(provider.base_url, provider.auth_token, provider.wire_api)
-    latency_ms = int((time.perf_counter() - start_time) * 1000)
+def catalog_is_fresh(provider, ttl=3600):
+    try:
+        stamp = datetime.fromisoformat(provider.catalog_fetched_at)
+        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        scope = catalog_scope(provider)
+        return bool(scope and scope == provider.catalog_scope and 0 <= age <= ttl)
+    except (TypeError, ValueError):
+        return False
 
+
+def probe_remote_models(base_url, auth_token=None, wire_api="responses", *, provider=None):
+    """Read every catalog page, keeping requests on the selected origin."""
+    try:
+        provider = provider or ProviderConfig(
+            id="probe", name="Catalog", base_url=base_url, auth_token=auth_token, wire_api=wire_api
+        )
+        headers = provider_headers(provider)
+        base = provider.base_url
+        if provider.wire_api == "anthropic_proxy" and not urlparse(base).path.rstrip("/").endswith(
+            "/v1"
+        ):
+            base += "/v1"
+        endpoint = base + "/models"
+        origin = (urlparse(endpoint).scheme, urlparse(endpoint).netloc)
+        seen = set()
+        collected = []
+        with httpx.Client(timeout=10, follow_redirects=False) as client:
+            while endpoint:
+                if endpoint in seen:
+                    return False, [], "Catalog pagination repeated a page."
+                seen.add(endpoint)
+                response = client.get(endpoint, headers=headers)
+                if response.status_code != 200:
+                    return (
+                        False,
+                        [],
+                        f"Catalog request failed (HTTP {response.status_code}); inference was not tested.",
+                    )
+                body = response.json()
+                if not isinstance(body, dict):
+                    return False, [], "The endpoint returned an invalid model catalog."
+                items = body.get("data", body.get("models"))
+                if not isinstance(items, list):
+                    return False, [], "The endpoint returned an invalid model catalog."
+                collected.extend(items)
+                next_url = (
+                    (body.get("links") or {}).get("next")
+                    if isinstance(body.get("links"), dict)
+                    else None
+                )
+                if body.get("has_more"):
+                    cursor = body.get("last_id")
+                    if not isinstance(cursor, str) or not cursor:
+                        return False, [], "The endpoint omitted its pagination cursor."
+                    next_url = str(httpx.URL(base + "/models", params={"after_id": cursor}))
+                if next_url:
+                    endpoint = urljoin(endpoint, next_url)
+                    parsed = urlparse(endpoint)
+                    if (
+                        (parsed.scheme, parsed.netloc) != origin
+                        or parsed.path != urlparse(base + "/models").path
+                        or parsed.username
+                        or parsed.password
+                        or parsed.fragment
+                    ):
+                        return False, [], "Catalog pagination points outside the selected endpoint."
+                    if any(
+                        key.lower() in {"key", "api_key", "token", "authorization"}
+                        for key in httpx.URL(endpoint).params
+                    ):
+                        return False, [], "Catalog pagination contains credentials."
+                else:
+                    endpoint = None
+        return True, _models(collected), None
+    except CredentialError as exc:
+        return False, [], str(exc)
+    except (OSError, httpx.HTTPError, ValueError, TypeError):
+        return False, [], "Catalog request failed; check credentials, endpoint and network."
+
+
+def discover_models(provider):
+    if provider.auth_type == "official_oauth":
+        try:
+            with CodexReader(overrides=['model_provider="openai"']) as reader:
+                items = list(reader.pages("model/list", {"limit": 100, "includeHidden": False}))
+            models = _models(items)
+            return True, models, None
+        except (CodexRpcError, OSError):
+            return (
+                False,
+                [],
+                "Codex model discovery failed. Check sign-in or enter an exact model ID.",
+            )
+    return probe_remote_models(provider.base_url, provider=provider)
+
+
+def refresh_provider_models(provider):
+    ok, models, error = discover_models(provider)
     if ok:
-        count = len(models)
-        return True, f"Connection verified ({count} models available)", latency_ms
+        manual = [m for m in provider.models if m.is_custom and m.id not in {x.id for x in models}]
+        provider.models = models + manual
+        provider.catalog_source = (
+            "codex:model/list" if provider.auth_type == "official_oauth" else "provider:/models"
+        )
+        provider.catalog_fetched_at = datetime.now(timezone.utc).isoformat()
+        provider.catalog_scope = catalog_scope(provider)
+    return ok, models, error
 
-    # If /models 404, try root ping
-    if "404" in str(err):
-        try:
-            with httpx.Client(timeout=4.0) as client:
-                resp = client.get(provider.base_url)
-                latency_ms = int((time.perf_counter() - start_time) * 1000)
-                if resp.status_code < 500:
-                    return True, "Endpoint reachable (Base URL responding)", latency_ms
-        except Exception:
-            pass
 
-    return False, err or "Connection failed", latency_ms
+def select_model(provider, model_id):
+    model = next((item for item in provider.models if item.id == model_id), None)
+    if model is None:
+        model = ModelInfo(id=model_id, name=model_id, is_custom=True)
+        provider.models.append(model)
+    provider.default_model = model.id
+    provider.model_selected = True
+    if model.wire_api:
+        provider.wire_api = model.wire_api
+    if model.default_reasoning_effort:
+        provider.reasoning_effort = model.default_reasoning_effort
+    elif (
+        model.supported_reasoning_levels
+        and provider.reasoning_effort not in model.supported_reasoning_levels
+    ):
+        provider.reasoning_effort = model.supported_reasoning_levels[0]
+    return model
+
+
+def test_provider_connectivity(provider):
+    if provider.auth_type == "official_oauth":
+        return verify_openai_connectivity()
+    start = time.perf_counter()
+    ok, models, error = discover_models(provider)
+    elapsed = int((time.perf_counter() - start) * 1000)
+    return (
+        ok,
+        f"Catalog received ({len(models)} models); inference not tested."
+        if ok
+        else error or "Catalog unavailable.",
+        elapsed,
+    )

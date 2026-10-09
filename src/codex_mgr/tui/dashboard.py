@@ -37,7 +37,9 @@ def run_main_dashboard() -> None:
         settings = load_settings()
         active_p = settings.providers.get(settings.active_provider_id)
         active_name = active_p.name if active_p else settings.active_provider_id
-        active_model = active_p.default_model if active_p else "default"
+        active_model = (
+            active_p.default_model if active_p and active_p.model_selected else "Codex default"
+        )
         active_effort = active_p.reasoning_effort if active_p else "medium"
         active_stream = active_p.streaming if active_p else True
         active_ctx = active_p.context_window_limit if active_p else None
@@ -54,13 +56,13 @@ def run_main_dashboard() -> None:
         action = select_menu(
             message="Select action (press 1-6 or 'q' to quit):",
             choices=[
-                Choice(value="resume", name="1. 🚀  Resume Session"),
-                Choice(value="new", name="2. 🎯  Start New Session"),
-                Choice(value="switch", name="3. 🔄  Switch Provider / Model"),
-                Choice(value="manage", name="4. ➕  Manage Providers"),
-                Choice(value="tuning", name="5. 🔧  Advanced Model Tuning"),
-                Choice(value="tools", name="6. 🧰  Diagnostics & Tools"),
-                Choice(value="exit", name="q. 🚪  Exit"),
+                Choice(value="resume", name="1. Resume session"),
+                Choice(value="new", name="2. New session"),
+                Choice(value="switch", name="3. Connection and model"),
+                Choice(value="manage", name="4. Manage connections"),
+                Choice(value="tuning", name="5. Model settings"),
+                Choice(value="tools", name="6. Tools"),
+                Choice(value="exit", name="q. Exit"),
             ],
             default="resume",
             allow_back=False,
@@ -160,6 +162,8 @@ def _handle_switch_provider() -> None:
         else:
             print_error(msg)
         inquirer.text(message="Press [Enter] to continue...").execute()
+    if chosen_pid:
+        manage_provider_models(chosen_pid)
 
 
 def _handle_manage_providers() -> None:
@@ -184,7 +188,33 @@ def _handle_manage_providers() -> None:
         if chosen == "__new__":
             run_provider_wizard()
         else:
-            manage_provider_models(chosen)
+            from codex_mgr.core.models import test_provider_connectivity
+            from codex_mgr.core.providers import delete_provider
+
+            action = select_menu(
+                "Connection:",
+                [
+                    Choice("models", "Models"),
+                    Choice("edit", "Edit"),
+                    Choice("test", "Test catalog access"),
+                    Choice("delete", "Delete"),
+                    Choice(None, "Back"),
+                ],
+            )
+            if action == "models":
+                manage_provider_models(chosen)
+            elif action == "edit":
+                run_provider_wizard(chosen)
+            elif action == "test":
+                ok, message, elapsed = test_provider_connectivity(settings.providers[chosen])
+                (print_success if ok else print_error)(f"{message} ({elapsed} ms)")
+                inquirer.text(message="Enter to return:").execute()
+            elif (
+                action == "delete"
+                and inquirer.confirm(message="Delete this connection?", default=False).execute()
+            ):
+                ok, message = delete_provider(settings, chosen)
+                (print_success if ok else print_error)(message)
 
 
 def _handle_revert_session() -> None:

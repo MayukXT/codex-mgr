@@ -19,11 +19,13 @@ def test_export_and_import_cycle(tmp_path: Path):
                 id="openai",
                 name="OpenAI",
                 base_url="https://api.openai.com/v1",
-                auth_token="sk-secret-live-key-123456"
+                auth_token="synthetic-private-key",
             )
-        }
+        },
     )
-    mock_settings_file.write_text(json.dumps(initial_settings.model_dump(mode="json")), encoding="utf-8")
+    mock_settings_file.write_text(
+        json.dumps(initial_settings.model_dump(mode="json")), encoding="utf-8"
+    )
 
     # 1. Test sanitized export
     export_file = tmp_path / "bundle.json"
@@ -51,13 +53,15 @@ def test_export_and_import_cycle(tmp_path: Path):
         "auth_type": "bearer_token",
         "default_model": "custom-model",
         "reasoning_effort": "max",
-        "models": []
+        "models": [],
     }
     export_file.write_text(json.dumps(bundle_data), encoding="utf-8")
 
-    with patch("codex_mgr.config.settings.get_cmgr_settings_path", return_value=mock_settings_file), \
-         patch("codex_mgr.config.settings.get_backups_dir", return_value=tmp_path / "backups"):
-        added, updated = apply_import_bundle(export_file, conflict_strategy="merge")
+    with (
+        patch("codex_mgr.config.settings.get_cmgr_settings_path", return_value=mock_settings_file),
+        patch("codex_mgr.config.settings.get_backups_dir", return_value=tmp_path / "backups"),
+    ):
+        added, _updated = apply_import_bundle(export_file, conflict_strategy="merge")
 
     assert added == 1
     updated_settings = json.loads(mock_settings_file.read_text(encoding="utf-8"))
