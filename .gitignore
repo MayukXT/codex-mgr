@@ -79,3 +79,13 @@ cmgr.json.bak*
 local_test_*/
 *.tmp
 *.bak
+
+# Graphify Knowledge Graph (Kept locally only)
+graphify-out/
+
+# Private development context (kept on disk, excluded from source releases)
+/docs/obsidian/
+/docs/superpowers/
+/design.md
+/cmgr-config.json
+/setup.json

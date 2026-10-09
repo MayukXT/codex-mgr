@@ -1,108 +1,38 @@
-# Developer & Contributor Guide (`FORDEV.md`)
+# Contributing
 
-Welcome to the **Codex Manager (`codex-mgr` / `cmgr`)** developer documentation.
+Install Python 3.10 or later, Git, and Codex CLI.
 
----
-
-## 🛠️ Architecture & Package Layout
-
-```
-codex-mgr/
-├── pyproject.toml              # Build & dependency metadata, CLI entrypoints (cmgr, codex-mgr)
-├── README.md                   # User-facing open-source guide
-├── FORDEV.md                   # Contributor & developer workflows
-├── design.md                   # Terminal UI specification & design tokens
-├── src/
-│   └── codex_mgr/
-│       ├── cli.py              # CLI argument parser & command dispatcher
-│       ├── config/             # Settings (cmgr.json), Pydantic schemas, import/export
-│       ├── core/               # Bridge engine, provider catalog, models, proxy, runner
-│       ├── tui/                # Interactive terminal user interface screens
-│       └── utils/              # Paths, normalizer, display, process, and TOML writer
-├── docs/
-│   ├── obsidian/               # Obsidian Knowledge Base with bidirectional links
-│   └── superpowers/specs/      # Formal specification documents
-└── tests/                      # Pytest suite with 100% synthetic mock fixtures
-```
-
----
-
-## 💻 Local Setup & Development
-
-### 1. Prerequisites
-- Python 3.10+ (tested up to Python 3.14)
-- Git
-
-### 2. Environment Setup
-```bash
-# Clone the repository
-git clone https://github.com/user/codex-mgr.git
+```sh
+git clone https://github.com/MayukXT/codex-mgr.git
 cd codex-mgr
-
-# Create and activate virtual environment
 python -m venv .venv
-# Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-# Linux / macOS:
-source .venv/bin/activate
-
-# Install in editable mode with development dependencies
-pip install -e ".[dev]"
 ```
 
-### 3. Running the Test Suite
-```bash
-pytest tests -v
+Activate `.venv\Scripts\Activate.ps1` in PowerShell or `source .venv/bin/activate` on macOS/Linux, then install:
+
+```sh
+python -m pip install -e ".[dev]"
+python -m pytest tests -q
 ```
 
----
+## Package structure
 
-## 🔒 Secret Hygiene & Public Safety (Strict)
+- `src/codex_mgr/config/`: validated settings and portable bundles.
+- `src/codex_mgr/core/`: provider configuration, catalogs, session conversion, recovery, diagnostics, and launch.
+- `src/codex_mgr/tui/`: terminal menus using the same core operations as the CLI.
+- `src/codex_mgr/utils/`: paths, formatting, input normalization, and file helpers.
+- `tests/`: synthetic fixtures and protocol tests.
 
-When contributing code, tests, or documentation:
-1. **Never commit live API keys or tokens.** Always use synthetic mock tokens in tests (e.g. `sk-mock-key-1234`).
-2. **Never commit personal machine paths.** Use `get_codex_home()` and standard path resolution helpers.
-3. **Never commit real user session rollouts (`.jsonl`).** Test fixtures must be generated programmatically with synthetic data.
-4. **All secrets in UI displays must be masked** using `mask_api_key()`.
+## Change requirements
 
----
+Preserve Codex configuration fields the manager does not own. Parse and validate before mutation, require a successful snapshot, and report failures without changing the saved active provider. Session conversion must preserve conversation and tool records; document any removal of encrypted reasoning.
 
-## 🧠 Core Engineering Concepts
+Keep tests independent of the developer's Codex home, sessions, credentials, and accounts. Mock network traffic and subprocess handoffs. Test malformed input, interrupted writes, conflicting writers, long names, and both CLI and TUI entry points when relevant.
 
-### 1. Encrypted Reasoning Blobs & The Session Bridge
-OpenAI models output proprietary Fernet-encrypted reasoning blobs in `response_item` (`encrypted_content`). When switching to non-OpenAI gateways:
-- `core/bridge.py` stream-parses the session rollout.
-- Sets `encrypted_content = None` on reasoning items and subagent communication frames.
-- Re-binds `session_meta.payload.model_provider` to the target provider.
-- All writes are transactional via `.tmp` file replacement with pre-modification backups stored in `~/.codex/backups/sessions/`.
+Never include real keys, authentication files, exported settings, session transcripts, local paths, or development notes in fixtures or release archives. Use unmistakably synthetic values and inspect staged files before committing.
 
-### 2. Surgical `config.toml` Patching
-`core/profiles.py` uses `dump_toml` to surgically update `model`, `model_provider`, and `[model_providers.<id>]`.
-- Custom MCP servers (`[mcp_servers.*]`), desktop theme settings, and security hook hashes are 100% preserved.
+## Compatibility
 
-### 3. Anthropic 5.5 Adapter Proxy
-`core/proxy.py` runs a lightweight loopback server on `127.0.0.1:4099` that translates OpenAI Responses/Chat requests into Anthropic Messages payloads, mapping reasoning efforts (`low` through `ultra`) into adaptive thinking budgets.
+Check emitted fields and transport against the supported Codex configuration schema. Do not infer model capability from its name or treat endpoint reachability as authentication/inference success. A new provider requires a tested model, authentication method, and complete request/response workflow.
 
----
-
-## 🤝 Adding a New Provider Template
-To add a new built-in provider preset:
-1. Edit `src/codex_mgr/core/providers.py`.
-2. Add a new `ProviderConfig` to `get_default_presets()`.
-3. Specify `id`, `name`, `base_url`, `wire_api` (`responses` | `chat` | `anthropic_proxy`), and default models.
-4. Add corresponding tests in `tests/test_providers.py`.
-
----
-
-## 🏷️ Version Bumping & Release Workflow
-1. Bump `__version__` in `src/codex_mgr/__init__.py`.
-2. Bump `version` in `pyproject.toml`.
-3. Run tests: `pytest tests -v`.
-4. Run Graphify update: `graphify extract . --code-only`.
-5. Build distribution artifacts: `pip install build && python -m build`.
-
----
-
-## 🗺️ Platform Scope & Roadmap
-- **v1.0.0 (Current):** Focused primarily on Windows environments, with full native PowerShell, Windows Command Prompt, Windows Terminal, and AppData binary auto-discovery.
-- **v1.1.0+ (Roadmap):** Extending official testing and packaging to Linux (standardizing on `$XDG_CONFIG_HOME`) and macOS.
+Run the complete test suite before submitting a change. Public documentation should describe observable behavior, requirements, and limits.

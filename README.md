@@ -1,126 +1,96 @@
-# Codex Manager (`codex-mgr` / `cmgr`)
+# Codex Manager
 
-> **Universal multi-provider manager and reasoning-blob session bridge for OpenAI Codex CLI.**
+Manage Codex CLI providers, models, and saved sessions from your terminal.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Codex CLI](https://img.shields.io/badge/Codex-2026%20Ready-green.svg)](https://openai.com)
+`cmgr` brings provider settings, model selection, session resumption, and recovery tools into one place. It runs alongside [Codex CLI](https://developers.openai.com/codex/cli/) and uses your existing Codex home directory.
 
----
+## Project status
 
-## 🌟 Overview
+The current release needs compatibility and recovery fixes before it can be recommended for everyday use. In particular, provider authentication, cross-provider resumption, and the Anthropic adapter have known issues. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
 
-When switching OpenAI Codex CLI between model providers (such as official OpenAI access, AgentRouter, OpenRouter, Anthropic Claude 5.5, DeepSeek, or local Ollama), session resumption typically breaks. 
+## Install from source
 
-This happens because OpenAI models output proprietary Fernet-encrypted reasoning blobs (`encrypted_content`), which upstream routers reject with `HTTP 400 Bad Request`, and local Codex state reducers reject with identity mismatch errors.
+Requirements: Python 3.10 or later and an installed Codex CLI.
 
-`codex-mgr` (`cmgr`) eliminates this friction entirely. It provides:
-1. **Interactive Terminal Dashboard (TUI):** A single unified arrow-key menu to switch providers and resume sessions.
-2. **Universal Session Bridging:** Automatically detects provider changes, creates atomic backups, and sanitizes reasoning traces in $<0.1$s without losing any prompts, code diffs, or tool outputs.
-3. **2026 Model Generation Support:** Native out-of-the-box presets for **GPT-6.1 Sol**, **GPT-6 Astra**, **Claude Sonnet 5.5**, **Claude Opus 5.5**, **Claude Fable 5.1**, **DeepSeek R2**, and local offline inference.
-4. **Local Model Cache Ingestion:** Automatically reads `~/.codex/models_cache.json` to keep available models current.
-5. **Zero-Token Health Probe:** Tests connections and lists available models using metadata endpoints without spending prompt tokens.
-6. **Built-in Anthropic Proxy:** Micro-adapter enabling native Claude endpoints to speak Codex's Responses wire protocol.
-7. **Zero-Loss Config Switching:** Surgically updates `config.toml` while strictly preserving custom MCP servers (`kaggle`, `firecrawl`), hooks, and themes.
-
----
-
-## 🚀 Installation
-
-Install via `pip` or `pipx`:
-
-```bash
-pip install codex-mgr
-# or
-pipx install codex-mgr
-```
-
-This installs both `cmgr` (short) and `codex-mgr` (full) commands.
-
----
-
-## 🎮 Interactive TUI Dashboard
-
-Simply type `cmgr` in any terminal:
-
-```bash
+```sh
+git clone https://github.com/MayukXT/codex-mgr.git
+cd codex-mgr
+python -m pip install .
 cmgr
 ```
 
-```text
-╭─────────────────────────────────────────────────────────────────────────────╮
-│  🚀  CODEX MANAGER (cmgr)  v1.0.0                                          │
-│  The universal multi-provider bridge & session manager for Codex           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ACTIVE PROVIDER : ● OpenAI (Official)                                      │
-│  DEFAULT MODEL   : gpt-6.1-sol (Effort: ultra)                              │
-│  TOTAL SESSIONS  : 67 sessions recorded (57 OpenAI • 10 Router)             │
-╰─────────────────────────────────────────────────────────────────────────────╯
+For development, install with `python -m pip install -e ".[dev]"`.
 
-? What would you like to do? (Use arrow keys ⬆/⬇, press Enter)
- ❯ 🚀 Resume a Session        (Auto-bridges reasoning blobs seamlessly)
-   🔄 Switch Active Provider  (OpenAI ↔ AgentRouter ↔ Claude 5.5)
-   ➕ Manage Providers        (Add, edit, or configure models)
-   ⚡ Start New Session       (Launch fresh session with active provider)
-   🩺 Doctor & Health Check   (Verify configs, paths, and connectivity)
-   📦 Export & Import Setup   (Backup, share, or migrate configurations)
-   ↩️ Undo / Revert Session   (Restore original session from backup)
-   🚪 Exit
-```
+## What it provides
 
----
+- A terminal menu for starting and resuming Codex sessions.
+- Saved provider configurations and model choices.
+- A provider setup wizard with model listing and manual model entry.
+- Configuration export and import.
+- Diagnostic checks and local backup tools.
+- A session bridge that changes provider metadata and removes selected encrypted reasoning fields.
 
-## ⚡ Direct CLI Usage
+The bridge changes saved session files. Removing encrypted reasoning also removes information that cannot be reconstructed from the remaining conversation. Backups are intended to preserve the original file, but the current backup lookup needs repair.
 
-Power users and scripts can use direct commands:
+## Commands
 
-```bash
-# Resume most recent session (auto-bridging if needed)
-cmgr resume --last
-
-# Resume specific session by title or UUID
-cmgr resume "Recover encrypted"
-
-# Switch active provider instantly
-cmgr switch agentrouter
-cmgr switch openai
-
-# Check version & query upstream releases
-cmgr version
-
-# Check for updates without upgrading
+```sh
+cmgr --help
+cmgr                         # Open the terminal menu
+cmgr provider add            # Configure a provider
+cmgr switch                  # Show provider IDs and the saved active provider
+cmgr doctor                  # Check local configuration and endpoint reachability
+cmgr export --output setup.json --sanitize-keys
+cmgr import setup.json
+cmgr --version
 cmgr update --check
-
-# Self-update to the latest version via pip
-cmgr update
-
-# Run diagnostic health check
-cmgr doctor
-
-# Add a provider with the 6-step guided wizard
-cmgr provider add
-
-# Export configuration (safely redact keys for sharing)
-cmgr export --output my-setup.json --sanitize-keys
-
-# Import configuration bundle
-cmgr import my-setup.json
-
-# Restore a session to its original unbridged backup
-cmgr restore 019ee539-f672-7a12-acb7-2c2b614c1498
 ```
 
----
+The CLI also includes `resume`, `restore`, and `switch <provider-id>`. Their current implementation has known issues; review the compatibility notes before using them with existing sessions or configuration.
 
-## 🔒 Security & Privacy Policy
+`codex-mgr` is an alias for `cmgr`.
 
-- **Zero-Leak Guarantee:** Real API keys are never written to logs or displayed unmasked.
-- **Key Masking:** Credentials are automatically masked in the UI (`sk-...1a2b`).
-- **Atomic Backups:** All files are backed up to `~/.codex/backups/` before modification.
-- **Local Isolation:** No chat history or tokens are sent to any external tracking or telemetry server.
+## Providers and authentication
 
----
+Codex configuration separates the selected model from the connection used to run it:
 
-## 📄 License
+- `model` is the model ID sent to the endpoint.
+- `model_provider` selects a provider definition.
+- `[model_providers.<id>]` contains that connection's URL, authentication, and transport settings.
 
-MIT License. See [LICENSE](LICENSE) for details.
+For a custom connection, the ID must match `model_provider`. A friendly provider name does not determine the model or grant access to it. Current Codex supports the Responses protocol for custom providers; a Chat Completions endpoint needs a compatible adapter. See [Codex configuration](https://developers.openai.com/codex/config-advanced/).
+
+Signing in with ChatGPT and using an OpenAI API key are separate authentication methods. The current manager groups both under one OpenAI preset; explicit choices and correct credential handoff are planned. The Anthropic preset exists, but its adapter is not ready for Codex Responses traffic.
+
+Provider presets are configuration starting points. A preset or a successful model-list request does not establish that a model supports the complete coding workflow. Model IDs and capabilities should be checked against the selected provider's current catalog.
+
+## Files and privacy
+
+By default, the manager uses `~/.codex/`; it respects `CODEX_HOME` when configured.
+
+| File or directory | Purpose |
+| --- | --- |
+| `cmgr.json` | Manager settings, provider definitions, and any pasted keys |
+| `config.toml` | Codex configuration updated by provider switching |
+| `sessions/` | Codex session rollouts |
+| `backups/` | Copies of configuration, settings, and modified sessions |
+
+Pasted keys are stored as plaintext in local settings and may also appear in config backups. Export includes keys unless `--sanitize-keys` is supplied. Sanitized exports remove the dedicated token field; endpoints and other user-entered fields still need review before sharing.
+
+The manager makes network requests for provider checks, model lists, and update checks. Codex sends prompts and code to the selected inference endpoint when you run a session.
+
+## Development
+
+Source code is in `src/codex_mgr/`; tests are in `tests/`.
+
+```sh
+python -m pytest tests -q
+```
+
+The unit tests use synthetic fixtures. They do not establish live provider compatibility or complete workflow coverage.
+
+See the [usage guide](docs/wiki/Home.md) and [contributor guide](FORDEV.md).
+
+## License
+
+[MIT](LICENSE).
