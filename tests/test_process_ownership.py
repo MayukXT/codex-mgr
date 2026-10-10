@@ -201,6 +201,51 @@ for line in sys.stdin:
     assert not reader.reader.is_alive() and reader.process.stdout.closed
 
 
+@pytest.mark.parametrize("boundary", ["before", "partial", "after"])
+def test_gate_write_cancellation_cleans_owned_supervisor(monkeypatch, tmp_path, boundary):
+    children = []
+    original = subprocess.Popen
+
+    class InterruptedInput:
+        def __init__(self, stream):
+            self.stream = stream
+
+        @property
+        def closed(self):
+            return self.stream.closed
+
+        def close(self):
+            self.stream.close()
+
+        def write(self, value):
+            if boundary != "before":
+                self.stream.write(value[:-1] if boundary == "partial" else value)
+                self.stream.flush()
+            raise KeyboardInterrupt
+
+    def popen(*args, **kwargs):
+        child = original(*args, **kwargs)
+        child.stdin = InterruptedInput(child.stdin)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    marker = tmp_path / "unexpected-target"
+    with pytest.raises(KeyboardInterrupt):
+        OwnedBackgroundProcess(
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(60)",
+                str(marker),
+            ]
+        )
+    if boundary != "after":
+        assert not marker.exists()
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdin.closed and children[0].stdout.closed and children[0].stderr.closed
+
+
 def test_missing_background_command_has_generic_error(tmp_path):
     with pytest.raises(CodexRpcError) as error:
         CodexReader(command=[str(tmp_path / "synthetic-private-command")], timeout=2)

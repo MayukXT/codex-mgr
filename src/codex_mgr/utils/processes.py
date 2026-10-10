@@ -147,6 +147,7 @@ class OwnedBackgroundProcess:
         self._job = None
         self._watcher = None
         self._closed = False
+        self._gate_released = False
         self._done = threading.Event()
         self._shutdown_timeout = shutdown_timeout
         self._windows = os.name == "nt"
@@ -169,6 +170,8 @@ class OwnedBackgroundProcess:
                 self._job.assign(self._process)
             self._watcher = threading.Thread(target=self._watch_completion, daemon=True)
             self._watcher.start()
+            # Mark before writing: interruption/flush failure may follow release.
+            self._gate_released = True
             self._process.stdin.write(gate)
             self._process.stdin.flush()
         except BaseException:
@@ -204,15 +207,18 @@ class OwnedBackgroundProcess:
                 pass
         if not startup_failure:
             self._done.wait(timeout=self._shutdown_timeout)
-        if self._windows:
-            if startup_failure:
-                # Assign may have failed; terminate only our still-gated child.
-                process.kill()
+        if startup_failure and not self._gate_released:
+            # No target can exist yet. macOS may reject a zombie-only group.
+            process.kill()
             if self._job:
                 self._job.close()
+        elif self._windows:
+            self._job.close()
         else:
             # Never reap the pinned supervisor before the final group signal.
-            for sig in (signal.SIGTERM, signal.SIGKILL):
+            # Startup cancellation may precede the supervisor's TERM handler.
+            signals = (signal.SIGKILL,) if startup_failure else (signal.SIGTERM, signal.SIGKILL)
+            for sig in signals:
                 try:
                     os.killpg(process.pid, sig)
                 except ProcessLookupError:
