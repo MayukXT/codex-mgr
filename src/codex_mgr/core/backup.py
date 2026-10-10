@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from codex_mgr.core.rollouts import (
+    CanonicalHistoryError,
     canonical_session_id,
     metadata_from_record,
     read_session_metadata,
@@ -21,8 +22,11 @@ def _session_directory(session_id: str) -> Path:
 
 
 def create_session_backup(session_id: str, rollout_path: Path) -> Path:
-    if read_session_metadata(rollout_path).id != canonical_session_id(session_id):
+    metadata = read_session_metadata(rollout_path)
+    if metadata.id != canonical_session_id(session_id):
         raise ValueError("Rollout belongs to a different session.")
+    if metadata.canonical_history:
+        raise CanonicalHistoryError()
     return create_snapshot(rollout_path, _session_directory(session_id), suffix=".rollout.jsonl")
 
 
@@ -77,16 +81,20 @@ def restore_session_backup(
         record = json.loads(first.decode("utf-8-sig"))
         # A suffix directory alone cannot establish the identity of a legacy copy.
         identity_path = rollout_path if backup_path.parent == folder else backup_path
-        if metadata_from_record(record, identity_path).id != session_id:
+        snapshot_metadata = metadata_from_record(record, identity_path)
+        if snapshot_metadata.id != session_id:
             raise ValueError("Snapshot belongs to a different session.")
     except (StopIteration, json.JSONDecodeError, AttributeError) as exc:
         raise ValueError("Snapshot has no valid session identity.") from exc
     with session_write_guard(session_id, rollout_path):
-        if read_session_metadata(rollout_path).id != session_id:
+        current_metadata = read_session_metadata(rollout_path)
+        if current_metadata.id != session_id:
             raise ValueError("Current rollout belongs to a different session.")
         before = rollout_path.read_bytes()
         if before == data:
             return backup_path
+        if current_metadata.canonical_history or snapshot_metadata.canonical_history:
+            raise CanonicalHistoryError()
         create_session_backup(session_id, rollout_path)
         if backup_path.parent == legacy.resolve():
             # Preserve the legacy original and create a verified full-UUID copy.

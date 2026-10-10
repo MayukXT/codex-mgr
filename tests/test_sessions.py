@@ -61,6 +61,15 @@ def test_identity_conflict_is_not_indexed_as_a_different_session():
     assert catalog.skipped_rollouts == 1
 
 
+@pytest.mark.parametrize("mode", [None, "future-mode", 1, False, {}, []])
+def test_unknown_history_mode_is_not_treated_as_an_editable_legacy_file(mode):
+    path = rollout(1, metadata={"history_mode": mode})
+    with pytest.raises(SessionIdentityError, match="history mode"):
+        read_session_metadata(path)
+    catalog = discover_sessions()
+    assert not catalog.sessions and catalog.skipped_rollouts == 1
+
+
 def test_header_can_have_blank_lines_and_bom_but_not_nonmetadata():
     path = rollout(1)
     path.write_bytes(b"\n\r\n\xef\xbb\xbf" + path.read_bytes())

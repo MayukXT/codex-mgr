@@ -210,16 +210,12 @@ def prepare_bridge(
                         details = metadata_from_record(editor.value, rollout)
                         if details != meta:
                             raise FileConflictError("Session identity changed during preparation.")
-                        payload = editor.value["payload"]
                         if (
                             details.provider != target_provider_id
                             or strip_reasoning
                             or preserve_reasoning is not None
                             or details.from_filename
-                        ) and (
-                            payload.get("history_base") is not None
-                            or payload.get("history_mode") == "paginated"
-                        ):
+                        ) and details.canonical_history:
                             raise BridgeError(
                                 "This session uses a paginated or inherited history store. File conversion requires its canonical store workflow."
                             )

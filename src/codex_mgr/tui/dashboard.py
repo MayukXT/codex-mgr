@@ -14,6 +14,7 @@ from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import activate_provider
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.resume import start_session
+from codex_mgr.core.rollouts import CanonicalHistoryError
 from codex_mgr.tui.doctor_view import render_doctor_report
 from codex_mgr.tui.model_picker import manage_provider_models
 from codex_mgr.tui.portable_view import run_portable_menu
@@ -282,6 +283,8 @@ def _handle_revert_session() -> None:
         try:
             restored = restore_session_backup(session_item.id, session_item.rollout_path, snapshot)
             print_success(f"Successfully restored session from: {restored.name}")
+        except CanonicalHistoryError as exc:
+            print_error(str(exc))
         except (OSError, ValueError, RuntimeError):
             print_error(
                 "Restore failed. Check snapshot integrity, session writers and backup storage."

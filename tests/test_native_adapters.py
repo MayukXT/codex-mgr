@@ -12,10 +12,15 @@ from test_streaming_codecs import block, chat, delta, finish, start, stop, wire
 from codex_mgr.config.schema import ModelInfo, ProviderConfig
 from codex_mgr.core.adapters.launch import AdapterLaunch, adapter_connection_id
 from codex_mgr.core.adapters.runtime import AdapterRuntime
-from codex_mgr.core.backup import list_session_backups
+from codex_mgr.core.backup import (
+    create_session_backup,
+    list_session_backups,
+    restore_session_backup,
+)
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
-from codex_mgr.utils.paths import find_codex_binary, get_codex_home
+from codex_mgr.utils.files import create_snapshot
+from codex_mgr.utils.paths import find_codex_binary, get_backups_dir, get_codex_home
 from codex_mgr.utils.processes import OwnedBackgroundProcess
 
 pytestmark = pytest.mark.skipif(
@@ -24,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_native_canonical_history_rejects_file_only_reasoning_conversion(tmp_path, monkeypatch):
+def test_native_canonical_history_rejects_file_only_mutations(tmp_path, monkeypatch):
     from test_continuations import thinking_stream
 
     monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
@@ -36,8 +41,23 @@ def test_native_canonical_history_rejects_file_only_reasoning_conversion(tmp_pat
         provider.reasoning_budget = 1024
         with AdapterRuntime(provider) as runtime:
             first = launch(tmp_path, runtime, reasoning=True)
-    identity = first[0]["thread_id"]
-    rollout = next((get_codex_home() / "sessions").rglob("*.jsonl"))
+            identity = first[0]["thread_id"]
+            rollout = next((get_codex_home() / "sessions").rglob("*.jsonl"))
+            snapshot = create_snapshot(
+                rollout,
+                get_backups_dir() / "sessions" / identity,
+                suffix=".rollout.jsonl",
+            )
+            launch(tmp_path, runtime, session=identity, reasoning=True)
+            before_restore = rollout.read_bytes()
+            with pytest.raises(ValueError, match="canonical store"):
+                create_session_backup(identity, rollout)
+            with pytest.raises(ValueError, match="canonical store"):
+                restore_session_backup(identity, rollout, snapshot)
+            assert rollout.read_bytes() == before_restore
+            assert list_session_backups(identity) == [snapshot]
+            resumed = launch(tmp_path, runtime, session=identity, reasoning=True)
+            assert resumed[-1]["type"] == "turn.completed"
     original = rollout.read_bytes()
     with upstream("chat") as (provider, received, _), AdapterRuntime(provider) as runtime:
         with (
@@ -45,7 +65,7 @@ def test_native_canonical_history_rejects_file_only_reasoning_conversion(tmp_pat
             prepare_bridge(rollout, "fixture", preserve_reasoning=runtime.reasoning_compatible),
         ):
             pytest.fail("Canonical native history cannot be converted by replacing its file.")
-        assert rollout.read_bytes() == original and not list_session_backups(identity)
+        assert rollout.read_bytes() == original and list_session_backups(identity) == [snapshot]
         assert not received
 
 

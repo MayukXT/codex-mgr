@@ -16,6 +16,13 @@ class SessionIdentityError(ValueError):
     pass
 
 
+class CanonicalHistoryError(ValueError):
+    def __init__(self):
+        super().__init__(
+            "Paginated or inherited history requires Codex's canonical store workflow. File-only backup and restore are unavailable."
+        )
+
+
 def canonical_session_id(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(_UUID, value):
         raise SessionIdentityError("Session identity must be a complete UUID.")
@@ -29,6 +36,7 @@ class SessionMetadata:
     cwd: str | None
     timestamp: str | None
     from_filename: bool = False
+    canonical_history: bool = False
 
 
 def metadata_from_record(record: object, path: Path) -> SessionMetadata:
@@ -37,6 +45,9 @@ def metadata_from_record(record: object, path: Path) -> SessionMetadata:
     payload = record.get("payload")
     if not isinstance(payload, dict):
         raise SessionIdentityError("Session metadata is invalid.")
+    mode = payload.get("history_mode", "legacy")
+    if not isinstance(mode, str) or mode not in {"legacy", "paginated"}:
+        raise SessionIdentityError("Session metadata has an unsupported history mode.")
     match = _FILENAME.fullmatch(path.name)
     filename_id = canonical_session_id(match["id"]) if match else None
     raw_id = payload.get("id")
@@ -54,7 +65,12 @@ def metadata_from_record(record: object, path: Path) -> SessionMetadata:
         return value if isinstance(value, str) and value else None
 
     return SessionMetadata(
-        session_id, text("model_provider"), text("cwd"), text("timestamp"), raw_id is None
+        session_id,
+        text("model_provider"),
+        text("cwd"),
+        text("timestamp"),
+        raw_id is None,
+        mode == "paginated" or payload.get("history_base") is not None,
     )
 
 

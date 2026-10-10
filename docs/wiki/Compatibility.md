@@ -12,4 +12,4 @@ Older direct Anthropic model versions can be retired while a gateway retains an 
 
 See [configuration](Configuration.md), [recovery](Recovery.md), and the provider's current API documentation.
 
-Session conversion handles recognized reasoning in response items, replacement histories, guardian checkpoints and readable inter-agent communication. Encrypted-only compaction/messages/tool results cannot be reconstructed and are rejected. Paginated or inherited stores require the canonical Codex store workflow for conversion. Other editors and older Codex clients must be stopped before changing saved history.
+Session conversion handles recognized reasoning in response items, replacement histories, guardian checkpoints and readable inter-agent communication. Encrypted-only compaction/messages/tool results cannot be reconstructed and are rejected. Paginated or inherited stores require a canonical Codex store workflow for conversion, backup and restore; the manager refuses file-only replacements. Other editors and older Codex clients must be stopped before changing saved history.

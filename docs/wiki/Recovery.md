@@ -73,6 +73,8 @@ cmgr restore <session-uuid> --snapshot <listed-filename>
 
 Restore verifies snapshot integrity and identity, then saves current content in a new snapshot before replacement. Legacy backups stored under a 12-character UUID suffix are listed only when their metadata matches the complete UUID. Restoring a legacy copy also creates a checksummed copy in the full UUID directory and retains the legacy original. Corrupt, truncated or mismatched snapshots are rejected.
 
+File backup and restore apply to legacy JSONL sessions. Paginated or inherited sessions require a canonical store workflow that includes their indexes and inherited history; replacing one transcript could leave that store inconsistent. The manager refuses those file-only operations before changing the session. An identical snapshot is a no-op.
+
 Backups can contain prompts, source code, tool output, configuration, and credentials; keep them private. Checksums detect corruption and do not authenticate a snapshot against deliberate replacement of both the file and checksum.
 
 [Compatibility](Compatibility.md) describes the current supported limits.

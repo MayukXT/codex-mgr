@@ -30,6 +30,7 @@ from codex_mgr.core.revisions import (
     list_revisions,
     prepare_revision_restore,
 )
+from codex_mgr.core.rollouts import CanonicalHistoryError
 from codex_mgr.core.sessions import (
     AmbiguousSessionError,
     find_session_by_id_or_title,
@@ -469,6 +470,9 @@ def _main(argv: list[str] | None = None) -> int:
             restored = restore_session_backup(session.id, session.rollout_path, selected)
             print_success(f"Successfully restored session from: {restored.name}")
             return 0
+        except CanonicalHistoryError as exc:
+            print_error(str(exc))
+            return 1
         except (OSError, ValueError, RuntimeError):
             print_error(
                 "Restore failed. Check snapshot integrity, session identity, active writers and backup storage."

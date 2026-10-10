@@ -14,8 +14,8 @@ from codex_mgr.core.backup import (
     restore_session_backup,
 )
 from codex_mgr.core.session_lock import _native_lock, session_write_guard
-from codex_mgr.utils.files import FileConflictError, read_snapshot
-from codex_mgr.utils.paths import get_backups_dir, get_codex_home
+from codex_mgr.utils.files import FileConflictError, create_snapshot, read_snapshot
+from codex_mgr.utils.paths import get_backups_dir, get_codex_home, get_sessions_dir
 
 SID = "00000000-0000-0000-0000-000000000001"
 
@@ -60,6 +60,88 @@ def test_restore_selects_older_snapshot_and_preserves_current_content(tmp_path):
     restore_session_backup(SID, rollout, first)
     assert rollout.read_bytes() == data()
     assert any(read_snapshot(path) == data(text="current") for path in list_session_backups(SID))
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"history_mode": "paginated"}, {"history_base": {"thread_id": SID, "ordinal": 4}}],
+    ids=["paginated", "inherited"],
+)
+@pytest.mark.parametrize("location", ["current", "snapshot", "both"])
+def test_canonical_history_restore_rejects_before_any_replacement_or_snapshot(
+    metadata, location, tmp_path
+):
+    def content(text, canonical):
+        records = [json.loads(line) for line in data(text=text).splitlines()]
+        if canonical:
+            records[0]["payload"].update(metadata)
+        return b"".join(json.dumps(record).encode() + b"\n" for record in records)
+
+    rollout = tmp_path / "rollout-synthetic.jsonl"
+    rollout.write_bytes(content("original", location != "current"))
+    folder = get_backups_dir() / "sessions" / SID
+    snapshot = create_snapshot(rollout, folder, suffix=".rollout.jsonl")
+    rollout.write_bytes(content("newer turn", location != "snapshot"))
+    before = rollout.read_bytes()
+    with pytest.raises(ValueError, match="canonical store"):
+        restore_session_backup(SID, rollout, snapshot)
+    assert rollout.read_bytes() == before
+    assert list_session_backups(SID) == [snapshot]
+    assert read_snapshot(snapshot) == content("original", location != "current")
+
+
+@pytest.mark.parametrize("metadata", [{"history_mode": "paginated"}, {"history_base": {}}])
+def test_file_only_backup_does_not_claim_to_capture_canonical_history(metadata, tmp_path):
+    rollout = tmp_path / "rollout-synthetic.jsonl"
+    records = [json.loads(line) for line in data().splitlines()]
+    records[0]["payload"].update(metadata)
+    rollout.write_bytes(b"".join(json.dumps(record).encode() + b"\n" for record in records))
+    before = rollout.read_bytes()
+    with pytest.raises(ValueError, match="canonical store"):
+        create_session_backup(SID, rollout)
+    assert rollout.read_bytes() == before and not list_session_backups(SID)
+    snapshot = create_snapshot(
+        rollout, get_backups_dir() / "sessions" / SID, suffix=".rollout.jsonl"
+    )
+    assert restore_session_backup(SID, rollout, snapshot) == snapshot.resolve()
+    assert rollout.read_bytes() == before and list_session_backups(SID) == [snapshot]
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "tui"])
+def test_canonical_restore_entrypoints_explain_the_store_requirement(entrypoint, monkeypatch):
+    from unittest.mock import Mock
+
+    from codex_mgr.cli import main
+    from codex_mgr.core.sessions import find_session_by_id_or_title
+    from codex_mgr.tui import dashboard
+    from codex_mgr.utils.display import console
+
+    folder = get_sessions_dir()
+    folder.mkdir(parents=True)
+    rollout = folder / f"rollout-synthetic-{SID}.jsonl"
+    records = [json.loads(line) for line in data().splitlines()]
+    records[0]["payload"]["history_mode"] = "paginated"
+    rollout.write_bytes(b"".join(json.dumps(record).encode() + b"\n" for record in records))
+    snapshot = create_snapshot(
+        rollout, get_backups_dir() / "sessions" / SID, suffix=".rollout.jsonl"
+    )
+    rollout.write_bytes(rollout.read_bytes() + b'{"type":"unknown","text":"newer turn"}\n')
+    before = rollout.read_bytes()
+    with console.capture() as captured:
+        if entrypoint == "cli":
+            assert main(["restore", SID, "--snapshot", snapshot.name]) == 1
+        else:
+            monkeypatch.setattr(
+                dashboard, "pick_session", lambda **_: find_session_by_id_or_title(SID)
+            )
+            monkeypatch.setattr(dashboard, "pick_snapshot", lambda _: snapshot)
+            monkeypatch.setattr(
+                dashboard.inquirer, "confirm", lambda **_: Mock(execute=lambda: True)
+            )
+            monkeypatch.setattr(dashboard.inquirer, "text", lambda **_: Mock(execute=lambda: ""))
+            dashboard._handle_revert_session()
+    assert "canonical store workflow" in captured.get()
+    assert rollout.read_bytes() == before and list_session_backups(SID) == [snapshot]
 
 
 def test_active_writer_prevents_restore_and_preservation_snapshot(tmp_path):
