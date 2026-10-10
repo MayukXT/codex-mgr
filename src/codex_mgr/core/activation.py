@@ -13,12 +13,19 @@ from codex_mgr.config.schema import CmgrSettings
 from codex_mgr.config.settings import (
     commit_settings,
     load_settings,
+    parse_settings,
     save_settings,
     serialize_settings,
 )
-from codex_mgr.core.native_config import verify_after_activation, verify_before_activation
+from codex_mgr.core.native_config import (
+    NativeConfigurationReadError,
+    validate_activation_configuration,
+    verify_after_activation,
+    verify_before_activation,
+)
 from codex_mgr.core.profiles import (
     ConfigurationError,
+    parse_configuration,
     prepare_configuration,
     snapshot_configuration,
 )
@@ -33,6 +40,7 @@ from codex_mgr.utils.paths import get_cmgr_settings_path, get_codex_home, get_co
 
 _TERMINAL = frozenset({"committed", "rolled_back", "accepted_external"})
 _STATES = _TERMINAL | {"prepared", "config_applied", "validated"}
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -266,6 +274,34 @@ def apply_settings(
             return True, "Settings saved."
         except (OSError, ValueError, RuntimeError):
             return False, "Settings were not saved. Reload or check permissions and backups."
+    return _apply_transaction(settings, activate_provider_id=activate_provider_id)
+
+
+def apply_configuration(
+    settings: CmgrSettings,
+    configuration: bytes,
+    *,
+    expected_config: bytes | None,
+    repair_current: bool = False,
+) -> tuple[bool, str]:
+    """Restore a reviewed candidate through the native-verified recovery transaction."""
+    return _apply_transaction(
+        settings,
+        activate_provider_id=settings.active_provider_id,
+        configuration=configuration,
+        expected_config=expected_config,
+        repair_current=repair_current,
+    )
+
+
+def _apply_transaction(
+    settings: CmgrSettings,
+    *,
+    activate_provider_id: str,
+    configuration: bytes | None = None,
+    expected_config: bytes | None | object = _UNSET,
+    repair_current: bool = False,
+) -> tuple[bool, str]:
     target = settings.providers.get(activate_provider_id)
     if target is None:
         return False, "Unknown provider. Add it before activating it."
@@ -274,15 +310,48 @@ def apply_settings(
     journal_path = None
     record = None
     config_before = settings_before = config_after = settings_after = None
+    success = (
+        "Configuration and settings restored."
+        if configuration is not None
+        else f"Selected {target.name}: {target.default_model}"
+    )
     try:
         with mutation_lock(config_path), mutation_lock(settings_path):
             _recover_journals()
             config_before = read_optional(config_path)
             settings_before = read_optional(settings_path)
+            if expected_config is not _UNSET and config_before != expected_config:
+                raise FileConflictError("Configuration changed after review; inspect it again.")
             if settings._loaded and settings_before != settings._source_bytes:
                 raise FileConflictError("Settings changed; reload before activating.")
-            config_after = prepare_configuration(target, config_before)
-            verify_before_activation(config_after)
+            if configuration is not None:
+                _contained(get_codex_home() / "backups" / "config")
+                _contained(get_codex_home() / "backups" / "settings")
+                for path in (config_path, settings_path):
+                    path.with_suffix(path.suffix + ".bak").resolve().relative_to(get_codex_home())
+            if settings_before is not None and not repair_current:
+                parse_settings(settings_before)
+            config_after = (
+                configuration
+                if configuration is not None
+                else prepare_configuration(target, config_before)
+            )
+            validate_activation_configuration(config_after)
+            malformed_config = False
+            try:
+                parse_configuration(config_before)
+            except ConfigurationError:
+                if not repair_current or configuration is None:
+                    raise
+                malformed_config = True
+            if not malformed_config:
+                try:
+                    verify_before_activation(config_after)
+                except NativeConfigurationReadError:
+                    if not repair_current or configuration is None:
+                        raise
+                    # Explicit repair can replace a native-unreadable current file.
+                    # A policy/layer rejection is different and cannot bypass preflight.
             settings.active_provider_id = activate_provider_id
             settings_after = serialize_settings(settings)
             transaction = _contained(
@@ -303,6 +372,14 @@ def apply_settings(
             journal_path = transaction / "journal.json"
             _journal(journal_path, record)
             snapshot_configuration()
+            if configuration is not None and settings_before is not None:
+                create_snapshot(
+                    settings_path,
+                    _contained(get_codex_home() / "backups" / "settings"),
+                    prefix="cmgr_",
+                    suffix=".json",
+                )
+                atomic_write(settings_path.with_suffix(".json.bak"), settings_before)
             try:
                 atomic_write(config_path, config_after, expected=config_before)
                 record["state"] = "config_applied"
@@ -314,14 +391,22 @@ def apply_settings(
                     )
                 record["state"] = "validated"
                 _journal(journal_path, record)
-                commit_settings(settings, expected=settings_before)
+                if configuration is None:
+                    commit_settings(settings, expected=settings_before)
+                else:
+                    commit_settings(
+                        settings,
+                        expected=settings_before,
+                        create_backup=False,
+                        allow_invalid_current=repair_current,
+                    )
             except (OSError, ValueError, RuntimeError):
                 # Recovery is conditional: never roll back an unrelated external edit.
                 _recover_journals()
                 raise
             record["state"] = "committed"
             _journal(journal_path, record)
-        return True, f"Selected {target.name}: {target.default_model}"
+        return True, success
     except ConfigurationError as exc:
         message = str(exc)
     except FileConflictError as exc:
@@ -337,7 +422,7 @@ def apply_settings(
     ):
         return (
             True,
-            f"Selected {target.name}: {target.default_model}. Check the pending recovery marker.",
+            f"{success} Check the pending recovery marker.",
         )
     settings.active_provider_id = old_active
     settings._source_bytes = (

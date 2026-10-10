@@ -13,6 +13,26 @@ The explicit second command keeps the current configuration and manager files. I
 
 Recovery reports transaction IDs and whether a file is original, requested, unchanged or externally edited. It does not print the file contents or credentials. Review snapshots before sharing them because configuration and manager snapshots may contain plaintext credentials.
 
+## Configuration revisions
+
+```sh
+cmgr revisions list
+cmgr revisions list --kind config
+cmgr revisions restore --config LISTED_FILENAME
+cmgr revisions restore --settings LISTED_FILENAME
+cmgr revisions restore --config CONFIG_FILENAME --settings SETTINGS_FILENAME --repair
+```
+
+Choose exact filenames from the listing. Only checksummed configuration and manager revisions in the selected Codex home's backup directories are supported. Linked files/directories, arbitrary paths, missing checksums and corrupt or oversized revisions are rejected. Listing shows metadata and corruption status, without printing file contents. A verified checksum does not establish that Codex will accept the configuration.
+
+A config revision restores its exact bytes, including comments and unrelated tables, and reconciles the manager's selected connection and model. A settings revision restores manager preferences and connections, then applies its selected connection to current TOML while preserving unrelated settings. When both are selected, the config revision determines the connection and model. Manager JSON is validated and serialized when saved.
+
+Current files are snapshotted before replacement. Changes after review stop restoration. Native configuration layers and managed requirements are checked before and after the write; failed verification restores matching original files. An external edit remains pending for explicit recovery. Interrupted restoration uses the same `cmgr recover` workflow as connection activation.
+
+Malformed current files require explicit `--repair` and a matching valid revision for each malformed file. A config-only restore cannot discard unreadable manager state, and a settings-only restore cannot replace unreadable TOML with an empty file. Repair preserves malformed originals in snapshots. Explicit repair also supports current TOML that parses but Codex cannot load. Preflight is attempted whenever the current TOML parses; a native read failure can proceed to repair, while a reported policy or layer conflict still stops before writes. Post-write native verification remains mandatory before committing manager state. Legacy profile revisions require explicit migration before restoration. Custom definitions using reserved built-in IDs must be explicitly renamed along with their `model_provider` selection; restoring an invalid definition does not rename it automatically.
+
+The terminal menu exposes config, settings and paired restores under Tools > Configuration revisions. Repair current files selects a pair of revisions with explicit repair permission. Selected complete filenames appear before confirmation, which defaults to No. If settings cannot be loaded, the entry screen offers recovery tools. The repair choice and final restore confirmation are separate.
+
 ## Find a session
 
 ```sh

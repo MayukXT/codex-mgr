@@ -50,6 +50,7 @@ cmgr doctor --network        # Also check API catalog access; no inference reque
 cmgr start --provider my-api # Apply the connection and start a new Codex session
 cmgr recover                 # Recover an interrupted configuration change
 cmgr recover --list          # Review pending changes and external conflicts
+cmgr revisions list         # List config/settings snapshots and integrity
 cmgr resume SESSION_UUID --to my-api
 cmgr restore SESSION_UUID --list
 cmgr export --output setup.json --sanitize-keys
@@ -66,7 +67,9 @@ Activation asks Codex to resolve configuration layers and managed requirements i
 
 `cmgr doctor` reports failed, warning and unchecked states separately. It does not establish inference or tool compatibility. Failed diagnostics and unavailable update checks return a nonzero exit code. `cmgr update` installs the checked stable release with the current Python interpreter's pip, verifies its installed version, and asks you to restart. If pip cannot manage that environment, use the package manager that installed it.
 
-Provider changes preserve TOML comments and unrelated settings, honor the selected Codex profile, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
+Provider changes preserve TOML comments and unrelated settings, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
+
+`cmgr revisions restore --config FILENAME --settings FILENAME` restores exact listed revisions after saving current files. Either option can be used alone. Malformed current files require matching valid revisions and explicit `--repair`; native verification must still pass. The menu provides the same workflow under Tools > Configuration revisions, including a recovery screen when settings cannot be read. See [recovery](docs/wiki/Recovery.md) for selection and integrity rules.
 
 `codex-mgr` is an alias for `cmgr`.
 

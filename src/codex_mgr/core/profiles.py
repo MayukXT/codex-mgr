@@ -52,7 +52,9 @@ def effective_configuration(data: dict[str, Any]) -> dict[str, Any]:
 def connection_id(provider: ProviderConfig) -> str:
     if provider.auth_type == "official_oauth":
         return "openai"
-    chosen = provider.codex_provider_id or provider.id
+    if provider.codex_provider_id is not None:
+        return provider.codex_provider_id
+    chosen = provider.id
     return f"cmgr_{chosen}" if chosen in {"openai", "ollama", "lmstudio"} else chosen
 
 
@@ -122,6 +124,10 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
             )
         target.pop("model_context_window", None)
     chosen_id = connection_id(provider)
+    if provider.auth_type != "official_oauth" and chosen_id in {"openai", "ollama", "lmstudio"}:
+        raise ConfigurationError(
+            "Choose a separate custom connection ID; Codex reserves built-in provider IDs."
+        )
     target["model_provider"] = chosen_id
     if provider.auth_type == "official_oauth":
         override = doc.get("model_providers", {}).get("openai", {})

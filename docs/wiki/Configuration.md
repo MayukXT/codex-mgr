@@ -9,7 +9,7 @@ Codex separates the inference model from its connection:
 | `[model_providers.<id>]` | Endpoint, authentication, and transport |
 | Provider `name` | Friendly connection label |
 
-Custom IDs must match `model_provider`. They do not need to be the endpoint's vendor name. Reserved built-in IDs cannot be repurposed as unrelated connections.
+Custom IDs must match `model_provider`. They do not need to be the endpoint's vendor name. Codex 0.159 rejects custom definitions using built-in IDs such as `openai`, `ollama` and `lmstudio`; choose a separate custom ID. Imported explicit native IDs remain exact, while new manager connections using those names get a separate generated ID. See the [native provider validation](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/config/src/config_toml.rs).
 
 If saved connections share a Codex ID, the saved active connection resolves that identity. An ambiguous ID without an active match stops loading instead of guessing. Native endpoint, transport and authentication fields replace stale imported values; a connection without an explicit model still needs model selection. Credentials may be supplied through a configured key or literal/environment HTTP headers.
 

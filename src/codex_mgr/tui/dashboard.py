@@ -37,7 +37,30 @@ from codex_mgr.utils.display import (
 def run_main_dashboard() -> None:
     """Run the primary interactive loop."""
     while True:
-        settings = load_settings()
+        try:
+            settings = load_settings()
+        except (OSError, ValueError, RuntimeError):
+            print_error("Current settings could not be read. Choose a recovery action.")
+            action = select_menu(
+                "Recovery",
+                [
+                    Choice("revisions", "Configuration revisions"),
+                    Choice("recovery", "Activation recovery"),
+                    Choice(None, "Exit"),
+                ],
+                allow_back=True,
+            )
+            if action == "revisions":
+                from codex_mgr.tui.revision_view import manage_configuration_revisions
+
+                manage_configuration_revisions()
+            elif action == "recovery":
+                from codex_mgr.tui.recovery_view import manage_activation_recovery
+
+                manage_activation_recovery()
+            else:
+                return
+            continue
         active_p = settings.providers.get(settings.active_provider_id)
         active_name = active_p.name if active_p else settings.active_provider_id
         active_model = (
@@ -117,11 +140,19 @@ def _handle_diagnostics_tools() -> None:
                 Choice(value="port", name="3. Export and import"),
                 Choice(value="update", name="4. Updates"),
                 Choice(value="recovery", name="5. Activation recovery"),
+                Choice(value="revisions", name="6. Configuration revisions"),
                 Choice(value=None, name="Back"),
             ],
             default="doctor",
             allow_back=True,
-            shortcuts={"1": "doctor", "2": "revert", "3": "port", "4": "update", "5": "recovery"},
+            shortcuts={
+                "1": "doctor",
+                "2": "revert",
+                "3": "port",
+                "4": "update",
+                "5": "recovery",
+                "6": "revisions",
+            },
         )
 
         if not action:
@@ -140,6 +171,10 @@ def _handle_diagnostics_tools() -> None:
             from codex_mgr.tui.recovery_view import manage_activation_recovery
 
             manage_activation_recovery()
+        elif action == "revisions":
+            from codex_mgr.tui.revision_view import manage_configuration_revisions
+
+            manage_configuration_revisions()
 
 
 def _handle_switch_provider() -> None:

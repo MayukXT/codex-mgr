@@ -19,7 +19,7 @@ from codex_mgr.utils.files import (
 from codex_mgr.utils.paths import get_backups_dir, get_cmgr_settings_path, get_config_toml_path
 
 
-def _read_valid(raw: bytes) -> CmgrSettings:
+def parse_settings(raw: bytes) -> CmgrSettings:
     try:
         return CmgrSettings.model_validate_json(raw)
     except (ValidationError, ValueError) as exc:
@@ -38,10 +38,29 @@ def serialize_settings(settings: CmgrSettings) -> bytes:
 def _import_configuration(settings: CmgrSettings) -> None:
     if not get_config_toml_path().exists():
         return
-    raw = read_config_toml()
+    import_configuration(settings, read_config_toml())
+
+
+def _available_id(settings: CmgrSettings, preferred: str) -> str:
+    if preferred not in settings.providers:
+        return preferred
+    base = preferred[:110] + "_imported"
+    identifier, index = base, 2
+    while identifier in settings.providers:
+        identifier = f"{base}_{index}"
+        index += 1
+    return identifier
+
+
+def import_configuration(settings: CmgrSettings, raw: dict) -> None:
+    """Reconcile a candidate selection without reading or writing live files."""
     effective = effective_configuration(raw)
     selected = effective.get("model_provider", "openai")
+    table = raw.get("model_providers", {}).get(selected, {})
+    custom_openai = selected == "openai" and table.get("requires_openai_auth") is False
     matches = [p for p in settings.providers.values() if connection_id(p) == selected]
+    if custom_openai:
+        matches = [p for p in matches if p.auth_type != "official_oauth"]
     active = settings.providers.get(settings.active_provider_id)
     if active in matches:
         existing = active
@@ -51,10 +70,11 @@ def _import_configuration(settings: CmgrSettings) -> None:
         )
     else:
         existing = matches[0] if matches else None
-    table = raw.get("model_providers", {}).get(selected, {})
     if existing is None:
-        if selected == "openai" and not table:
-            identifier = "openai_oauth" if "openai" in settings.providers else "openai"
+        if selected == "openai" and not custom_openai:
+            identifier = _available_id(
+                settings, "openai_oauth" if "openai" in settings.providers else "openai"
+            )
             existing = ProviderConfig(
                 id=identifier,
                 name="ChatGPT sign-in",
@@ -66,13 +86,13 @@ def _import_configuration(settings: CmgrSettings) -> None:
             settings.providers[identifier] = existing
         else:
             existing = _provider_from_table(selected, table, effective)
+            existing.id = _available_id(settings, existing.id)
             settings.providers[existing.id] = existing
     settings.active_provider_id = existing.id
-    if effective.get("model"):
-        existing.default_model = effective["model"]
-        existing.model_selected = True
-    if effective.get("model_reasoning_effort"):
-        existing.reasoning_effort = effective["model_reasoning_effort"]
+    existing.default_model = effective.get("model", "coding-model")
+    existing.model_selected = bool(effective.get("model"))
+    existing.reasoning_effort = effective.get("model_reasoning_effort")
+    existing.reasoning_enabled = existing.reasoning_effort != "none"
     existing.context_window_limit = effective.get("model_context_window")
     if table.get("base_url") and existing.auth_type != "official_oauth":
         existing.base_url = table["base_url"]
@@ -125,7 +145,7 @@ def load_settings() -> CmgrSettings:
     path = get_cmgr_settings_path()
     raw = read_optional(path)
     settings = (
-        _read_valid(raw)
+        parse_settings(raw)
         if raw is not None
         else CmgrSettings(providers={"openai": get_default_presets()["openai"]})
     )
@@ -141,15 +161,19 @@ def load_settings() -> CmgrSettings:
 
 
 def commit_settings(
-    settings: CmgrSettings, *, expected: bytes | None, create_backup: bool = True
+    settings: CmgrSettings,
+    *,
+    expected: bytes | None,
+    create_backup: bool = True,
+    allow_invalid_current: bool = False,
 ) -> bytes:
     """Persist while the caller holds the settings lock."""
     path = get_cmgr_settings_path()
     current = read_optional(path)
     if current != expected:
         raise FileConflictError("Settings changed; reload before saving.")
-    if current is not None:
-        _read_valid(current)
+    if current is not None and not allow_invalid_current:
+        parse_settings(current)
     encoded = serialize_settings(settings)
     if current == encoded:
         settings._source_bytes = current

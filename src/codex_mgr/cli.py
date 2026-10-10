@@ -22,8 +22,14 @@ from codex_mgr.core.activation import (
 )
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
+from codex_mgr.core.profiles import ConfigurationError
 from codex_mgr.core.providers import delete_provider
 from codex_mgr.core.resume import resume_session, start_session
+from codex_mgr.core.revisions import (
+    apply_revision_restore,
+    list_revisions,
+    prepare_revision_restore,
+)
 from codex_mgr.core.sessions import (
     AmbiguousSessionError,
     find_session_by_id_or_title,
@@ -108,6 +114,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--accept-external",
         metavar="TRANSACTION_ID",
         help="Snapshot and keep current files, settling this transaction",
+    )
+    revisions = subparsers.add_parser("revisions", help="List or restore configuration revisions")
+    revision_actions = revisions.add_subparsers(dest="action", required=True)
+    revision_list = revision_actions.add_parser(
+        "list", help="Show filenames and integrity metadata"
+    )
+    revision_list.add_argument("--kind", choices=("config", "settings"))
+    revision_restore = revision_actions.add_parser("restore", help="Restore exact listed revisions")
+    revision_restore.add_argument("--config", metavar="FILENAME")
+    revision_restore.add_argument("--settings", metavar="FILENAME")
+    revision_restore.add_argument(
+        "--repair",
+        action="store_true",
+        help="Explicitly replace malformed current files with valid revisions",
     )
 
     # version & update
@@ -324,6 +344,34 @@ def _main(argv: list[str] | None = None) -> int:
         else:
             ok, msg = recover_pending_activation()
         (print_success if ok else print_error)(msg)
+        return 0 if ok else 1
+
+    elif args.command == "revisions":
+        try:
+            if args.action == "list":
+                items = list_revisions(args.kind)
+                for item in items:
+                    console.print(
+                        f"{item.kind}  {item.name}  {item.integrity}  {item.size} bytes",
+                        markup=False,
+                    )
+                if not items:
+                    console.print("No checksummed configuration revisions.")
+                return 0
+            plan = prepare_revision_restore(
+                config=args.config, settings=args.settings, repair=args.repair
+            )
+            ok, message = apply_revision_restore(plan)
+        except ConfigurationError as exc:
+            print_error(str(exc))
+            return 1
+        except (OSError, ValueError, RuntimeError):
+            print_error(
+                "Revision restore was not prepared. Check exact filenames, integrity and current files. "
+                "Malformed files need matching valid revisions and --repair."
+            )
+            return 1
+        (print_success if ok else print_error)(message)
         return 0 if ok else 1
 
     elif args.command == "start":

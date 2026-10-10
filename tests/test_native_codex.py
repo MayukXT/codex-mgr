@@ -134,6 +134,93 @@ def test_native_automatic_controls_inherit_trusted_project_values(tmp_path, monk
     assert "model_reasoning_effort" not in saved and "model_context_window" not in saved
 
 
+def test_native_revision_repair_verifies_real_restored_config(tmp_path, monkeypatch):
+    from codex_mgr.config.settings import serialize_settings
+    from codex_mgr.core.profiles import prepare_configuration
+    from codex_mgr.core.revisions import apply_revision_restore, prepare_revision_restore
+    from codex_mgr.utils.files import create_snapshot, read_snapshot
+    from codex_mgr.utils.paths import get_cmgr_settings_path, get_config_toml_path
+
+    assert find_codex_binary() is not None
+    monkeypatch.chdir(tmp_path)
+    home = get_codex_home()
+    home.mkdir(parents=True)
+    selected = ProviderConfig(
+        id="fixture",
+        name="Fixture",
+        base_url="http://127.0.0.1:1/v1",
+        default_model="synthetic-restored",
+        auth_type="none",
+    )
+    settings = CmgrSettings(active_provider_id="fixture", providers={"fixture": selected})
+    raw = prepare_configuration(
+        selected, b'# retained comment\ncli_auth_credentials_store="file"\n'
+    )
+    get_config_toml_path().write_bytes(raw)
+    get_cmgr_settings_path().write_bytes(serialize_settings(settings))
+    config_revision = create_snapshot(
+        get_config_toml_path(), home / "backups/config", prefix="config_", suffix=".toml"
+    )
+    settings_revision = create_snapshot(
+        get_cmgr_settings_path(), home / "backups/settings", prefix="cmgr_", suffix=".json"
+    )
+    get_config_toml_path().write_bytes(b"malformed TOML")
+    get_cmgr_settings_path().write_bytes(b"malformed JSON")
+    plan = prepare_revision_restore(
+        config=config_revision.name, settings=settings_revision.name, repair=True
+    )
+    ok, message = apply_revision_restore(plan)
+    assert ok, message
+    assert get_config_toml_path().read_bytes() == raw
+    actual = read_native_configuration().config
+    assert actual["model"] == "synthetic-restored" and actual["model_provider"] == "fixture"
+    assert actual["model_providers"]["fixture"]["base_url"] == "http://127.0.0.1:1/v1"
+    assert b"malformed TOML" in [
+        read_snapshot(path) for path in (home / "backups/config").glob("config_*.toml")
+    ]
+    assert b"malformed JSON" in [
+        read_snapshot(path) for path in (home / "backups/settings").glob("cmgr_*.json")
+    ]
+
+
+def test_native_revision_rejects_reserved_builtin_override(tmp_path, monkeypatch):
+    from codex_mgr.core.profiles import ConfigurationError
+    from codex_mgr.core.revisions import prepare_revision_restore
+    from codex_mgr.utils.files import create_snapshot
+    from codex_mgr.utils.paths import get_config_toml_path
+
+    assert find_codex_binary() is not None
+    monkeypatch.chdir(tmp_path)
+    home = get_codex_home()
+    home.mkdir(parents=True)
+    raw = b'model="synthetic-selected"\nmodel_provider="openai"\nforced_login_method="api"\ncli_auth_credentials_store="file"\n[model_providers.openai]\nname="Synthetic API"\nbase_url="http://127.0.0.1:1/v1"\nwire_api="responses"\nrequires_openai_auth=false\n'
+    get_config_toml_path().write_bytes(raw)
+    saved = create_snapshot(
+        get_config_toml_path(), home / "backups/config", prefix="config_", suffix=".toml"
+    )
+    with pytest.raises(ConfigurationError, match="could not verify"):
+        read_native_configuration()
+    current = b'model="synthetic-current"\ncli_auth_credentials_store="file"\n'
+    get_config_toml_path().write_bytes(current)
+    with pytest.raises(ConfigurationError, match="reserves"):
+        prepare_revision_restore(config=saved.name)
+    assert get_config_toml_path().read_bytes() == current and saved.read_bytes() == raw
+    valid = create_snapshot(
+        get_config_toml_path(), home / "backups/config", prefix="config_", suffix=".toml"
+    )
+    get_config_toml_path().write_bytes(raw)
+    from codex_mgr.core.revisions import apply_revision_restore
+
+    plan = prepare_revision_restore(config=valid.name)
+    assert not apply_revision_restore(plan)[0]
+    assert get_config_toml_path().read_bytes() == raw
+    repaired = prepare_revision_restore(config=valid.name, repair=True)
+    ok, message = apply_revision_restore(repaired)
+    assert ok, message
+    assert get_config_toml_path().read_bytes() == current
+    assert read_native_configuration().config["model"] == "synthetic-current"
+
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("CMGR_NATIVE_CONTRACTS") != "1",
     reason="Set CMGR_NATIVE_CONTRACTS=1 with Codex 0.159.0 installed.",

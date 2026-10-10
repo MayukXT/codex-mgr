@@ -10,6 +10,10 @@ from codex_mgr.core.rpc import CodexReader, CodexRpcError
 from codex_mgr.utils.paths import get_config_toml_path
 
 
+class NativeConfigurationReadError(ConfigurationError):
+    """Codex could not read the current file/policy; selection checks did not run."""
+
+
 @dataclass(frozen=True)
 class NativeConfiguration:
     # Effective settings, origins and requirements may contain secrets or paths.
@@ -36,7 +40,7 @@ def read_native_configuration(*, cwd: Path | None = None) -> NativeConfiguration
             raise ValueError
         return NativeConfiguration(config, origins, requirements)
     except (CodexRpcError, OSError, ValueError, TypeError) as exc:
-        raise ConfigurationError(
+        raise NativeConfigurationReadError(
             "Codex could not verify effective configuration. Check its installation, "
             "configuration and managed policy before retrying."
         ) from exc
@@ -52,6 +56,11 @@ def _get(data, keys):
 
 def _selection(encoded: bytes) -> dict[tuple[str, ...], object]:
     data = parse_configuration(encoded).unwrap()
+    if {"openai", "ollama", "lmstudio"}.intersection(data.get("model_providers", {})):
+        raise ConfigurationError(
+            "Codex reserves built-in provider IDs. Explicitly rename custom definitions "
+            "and their model_provider selection before activation or restore."
+        )
     if data.get("profile") is not None or data.get("profiles"):
         raise ConfigurationError(
             "Legacy Codex profiles need explicit migration to named .config.toml files. "
@@ -97,6 +106,11 @@ def _origin(snapshot: NativeConfiguration, keys: tuple[str, ...]):
                 raise ConfigurationError("Codex returned an invalid configuration origin.")
             return origin["name"]
     return None
+
+
+def validate_activation_configuration(encoded: bytes) -> None:
+    """Check selection structure before any repair write or native inspection."""
+    _selection(encoded)
 
 
 def _user_can_replace(origin: dict | None) -> bool:
