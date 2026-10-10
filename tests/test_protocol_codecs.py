@@ -37,6 +37,49 @@ def request(**values):
     return {"model": "exact/router:model", "input": "Read and update synthetic.txt.", **values}
 
 
+@pytest.mark.parametrize(
+    "choice",
+    [
+        "required",
+        {"type": "function", "name": "read_file"},
+        {"type": "custom", "name": "apply_patch"},
+    ],
+)
+def test_manual_messages_thinking_refuses_forced_tools_without_rewriting_choice(choice):
+    value = request(tools=[FUNCTION, CUSTOM], tool_choice=choice, reasoning={"effort": "medium"})
+    before = deepcopy(value)
+    with pytest.raises(ProtocolError, match="Manual Messages thinking"):
+        adapt_request(value, "messages", thinking_budget=1024)
+    assert value == before
+    without_thinking = {**value, "reasoning": {"effort": "none"}}
+    assert adapt_request(without_thinking, "messages").payload["tool_choice"]["type"] in {
+        "any",
+        "tool",
+    }
+
+
+@pytest.mark.parametrize("choice", ["auto", "none"])
+def test_manual_messages_thinking_keeps_permitted_tool_choice(choice):
+    value = request(tools=[FUNCTION], tool_choice=choice, reasoning={"effort": "medium"})
+    assert adapt_request(value, "messages", thinking_budget=1024).payload["tool_choice"] == {
+        "type": choice
+    }
+
+
+@pytest.mark.parametrize("probability", [0, 0.5, 0.949999, 0.95, 0.99, 1])
+def test_manual_messages_thinking_enforces_its_sampling_range(probability):
+    value = request(top_p=probability, reasoning={"effort": "medium"})
+    if probability < 0.95:
+        with pytest.raises(ProtocolError, match="Manual Messages thinking"):
+            adapt_request(value, "messages", thinking_budget=1024)
+    else:
+        assert (
+            adapt_request(value, "messages", thinking_budget=1024).payload["top_p"] == probability
+        )
+    assert adapt_request(request(top_p=probability), "messages").payload["top_p"] == probability
+    assert adapt_request(value, "chat").payload["top_p"] == probability
+
+
 def chat_reply(content="Done.", *, calls=None, finish=None, **values):
     return {
         "model": "exact/router:model",

@@ -316,6 +316,10 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget, th
         raise ProtocolError("Readable summaries require supported active Messages thinking.")
     if active_thinking and summary is not None:
         payload["thinking"]["display"] = "summarized" if summary == "auto" else "omitted"
+    if active_thinking and payload.get("tool_choice", {}).get("type") in {"any", "tool"}:
+        raise ProtocolError(
+            "Manual Messages thinking supports only automatic or disabled tool choice."
+        )
     for key in ("temperature", "top_p"):
         if request.get(key) is not None:
             value = request[key]
@@ -330,6 +334,8 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget, th
                 raise ProtocolError(
                     "Explicit thinking requires temperature 1 or the provider default."
                 )
+            if active_thinking and key == "top_p" and value < 0.95:
+                raise ProtocolError("Manual Messages thinking requires top_p between 0.95 and 1.")
             payload[key] = value
     controls = request.get("text")
     if controls is not None:

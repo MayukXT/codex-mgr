@@ -141,6 +141,66 @@ def payload(*, stream=True):
     }
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("invalid", ["forced-tool", "top-p"])
+def test_manual_messages_controls_reject_before_upstream_http(invalid, stream, monkeypatch):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream("messages", buffered=True) as (provider, received, _):
+        provider.reasoning_budget = 1024
+        with AdapterRuntime(provider) as runtime:
+            value = payload(stream=stream)
+            value["reasoning"] = {"effort": "medium"}
+            if invalid == "forced-tool":
+                value["tools"] = [
+                    {"type": "function", "name": "synthetic", "parameters": {"type": "object"}}
+                ]
+                value["tool_choice"] = "required"
+            else:
+                value["top_p"] = 0.5
+            response = httpx.post(
+                runtime.base_url + "/responses",
+                headers=headers(runtime),
+                json=value,
+                trust_env=False,
+            )
+            assert response.status_code == 400 and received == []
+            assert response.json() == {
+                "error": {"message": "The local adapter rejected the request."}
+            }
+            assert "synthetic" not in response.text and value["input"] not in response.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("choice", ["auto", "none"])
+def test_manual_messages_permitted_controls_reach_upstream_exactly(choice, stream, monkeypatch):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    raw = json.dumps(messages_reply()).encode()
+    with upstream("messages", buffered=True, raw=raw) as (provider, received, _):
+        provider.streaming, provider.reasoning_budget = False, 1024
+        with AdapterRuntime(provider) as runtime:
+            value = payload(stream=stream)
+            value.update(
+                reasoning={"effort": "medium"},
+                top_p=0.95,
+                tools=[{"type": "function", "name": "synthetic", "parameters": {"type": "object"}}],
+                tool_choice=choice,
+            )
+            response = httpx.post(
+                runtime.base_url + "/responses",
+                headers=headers(runtime),
+                json=value,
+                trust_env=False,
+            )
+            assert response.status_code == 200 and len(received) == 1
+            sent = received[0][2]
+            assert sent["tool_choice"] == {"type": choice} and sent["top_p"] == 0.95
+            assert sent["thinking"] == {
+                "type": "enabled",
+                "budget_tokens": 1024,
+                "display": "omitted",
+            }
+
+
 def headers(runtime):
     _PORTS.add(int(runtime.base_url.split(":")[2].split("/")[0]))
     return {"Authorization": "Bearer " + runtime.token}
