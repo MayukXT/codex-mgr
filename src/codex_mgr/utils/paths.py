@@ -1,15 +1,15 @@
 """Cross-platform path resolution for Codex CLI and codex-mgr.
 
-Guarantees 100% dynamic discovery with zero hardcoded user paths or machine identities.
+Discover native executables without interpreting command wrappers or user prompts.
 """
 
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 def get_codex_home() -> Path:
@@ -60,7 +60,30 @@ def get_auth_json_path() -> Path:
     return get_codex_home() / "auth.json"
 
 
-def find_codex_binary() -> Optional[Path]:
+def _npm_native_binary(shim: Path) -> Path | None:
+    """Resolve supported npm Windows layouts without executing the .cmd wrapper."""
+    architecture = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(
+        platform.machine().lower()
+    )
+    if architecture is None:
+        return None
+    triple = "x86_64-pc-windows-msvc" if architecture == "x64" else "aarch64-pc-windows-msvc"
+    namespace = shim.parent / "node_modules" / "@openai"
+    package = namespace / "codex"
+    platform_name = f"codex-win32-{architecture}"
+    for root in (
+        package / "node_modules" / "@openai" / platform_name,
+        namespace / platform_name,
+        package,
+    ):
+        for relative in (f"vendor/{triple}/bin/codex.exe", f"vendor/{triple}/codex/codex.exe"):
+            candidate = root / relative
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def find_codex_binary() -> Path | None:
     """Dynamically locate the codex executable on the system.
 
     Searches:
@@ -72,7 +95,11 @@ def find_codex_binary() -> Optional[Path]:
     which_cmd = shutil.which("codex")
     if which_cmd:
         resolved = Path(which_cmd).resolve()
-        if resolved.exists():
+        if sys.platform == "win32" and resolved.suffix.lower() in {".cmd", ".bat", ".ps1"}:
+            native = _npm_native_binary(resolved)
+            if native is not None:
+                return native
+        elif resolved.is_file():
             return resolved
 
     # 2. Windows LocalAppData search

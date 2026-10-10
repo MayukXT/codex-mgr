@@ -305,3 +305,113 @@ def test_saved_api_key_configuration_preserves_existing_oauth_identity(codex_hom
     settings = load_settings()
     assert settings.providers["openai"].auth_token == "synthetic-token"
     assert settings.providers[settings.active_provider_id].auth_type == "official_oauth"
+
+
+def test_duplicate_codex_identity_prefers_the_saved_active_connection(codex_home):
+    first = gateway().model_copy(update={"id": "first", "codex_provider_id": "shared"})
+    second = gateway().model_copy(update={"id": "second", "codex_provider_id": "shared"})
+    save_settings(
+        CmgrSettings(active_provider_id="second", providers={"first": first, "second": second})
+    )
+    (codex_home / "config.toml").write_text(
+        'model="native-model"\nmodel_provider="shared"\n[model_providers.shared]\nname="Shared"\nbase_url="https://fixture.invalid/v1"\nwire_api="responses"\n',
+        encoding="utf-8",
+    )
+    loaded = load_settings()
+    assert loaded.active_provider_id == "second"
+    assert loaded.providers["second"].default_model == "native-model"
+    assert loaded.providers["first"].default_model == "coding-model"
+    assert loaded.providers["second"].auth_token is None
+    assert loaded.providers["second"].auth_type == "none"
+
+
+def test_shared_identity_without_an_active_match_is_rejected(codex_home):
+    first = gateway().model_copy(update={"id": "first", "codex_provider_id": "shared"})
+    second = gateway().model_copy(update={"id": "second", "codex_provider_id": "shared"})
+    original = (
+        CmgrSettings(active_provider_id="unmatched", providers={"first": first, "second": second})
+        .model_dump_json()
+        .encode()
+    )
+    (codex_home / "cmgr.json").write_bytes(original)
+    (codex_home / "config.toml").write_text('model_provider="shared"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="share"):
+        load_settings()
+    assert (codex_home / "cmgr.json").read_bytes() == original
+
+
+def test_imported_headers_and_transport_replace_stale_manager_credentials(codex_home):
+    save_settings(CmgrSettings(active_provider_id="gateway", providers={"gateway": gateway()}))
+    (codex_home / "config.toml").write_text(
+        'model="native"\nmodel_provider="gateway"\n[model_providers.gateway]\nname="Header gateway"\nbase_url="https://fixture.invalid/v1"\nwire_api="chat"\n[model_providers.gateway.env_http_headers]\nX-API-Key="SYNTHETIC_HEADER_KEY"\n',
+        encoding="utf-8",
+    )
+    loaded = load_settings().providers["gateway"]
+    assert loaded.auth_token is None and loaded.wire_api == "chat"
+    assert loaded.auth_type == "bearer_token"
+    assert loaded.env_http_headers == {"X-API-Key": "SYNTHETIC_HEADER_KEY"}
+
+
+def test_header_only_native_credentials_are_emitted_without_extra_key(codex_home):
+    provider = gateway().model_copy(
+        update={
+            "auth_type": "bearer_token",
+            "auth_token": None,
+            "env_http_headers": {"X-API-Key": "SYNTHETIC_HEADER_KEY"},
+        }
+    )
+    assert switch_active_provider(provider)[0]
+    table = read_config_toml()["model_providers"]["gateway"]
+    assert table["env_http_headers"] == {"X-API-Key": "SYNTHETIC_HEADER_KEY"}
+    assert "env_key" not in table and "experimental_bearer_token" not in table
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"version": 999},
+        {"preferences": {"unknown_future_preference": "private-value"}},
+        {"preferences": {"proxy_port": 10}},
+    ],
+)
+def test_unknown_settings_version_or_preference_is_not_silently_discarded(codex_home, patch):
+    raw = json.dumps({"providers": {}, **patch}).encode()
+    (codex_home / "cmgr.json").write_bytes(raw)
+    with pytest.raises(ValueError, match="settings"):
+        load_settings()
+    assert (codex_home / "cmgr.json").read_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['env_key=["invalid"]', 'wire_api="unknown-transport"', 'base_url="private-invalid-url"'],
+)
+def test_invalid_imported_connection_has_generic_error_and_preserves_files(codex_home, value):
+    raw = (
+        'model_provider="fixture"\n[model_providers.fixture]\nname="Fixture"\n'
+        + ("" if value.startswith("base_url") else 'base_url="https://fixture.invalid/v1"\n')
+        + value
+        + "\n"
+    ).encode()
+    (codex_home / "config.toml").write_bytes(raw)
+    with pytest.raises(ValueError) as error:
+        load_settings()
+    assert "private-invalid" not in str(error.value)
+    assert (codex_home / "config.toml").read_bytes() == raw
+    assert not (codex_home / "cmgr.json").exists()
+
+
+def test_imported_connection_without_model_requires_explicit_selection(codex_home):
+    (codex_home / "config.toml").write_text(
+        'model_provider="fixture"\n[model_providers.fixture]\nname="Fixture"\nbase_url="https://fixture.invalid/v1"\nwire_api="responses"\n',
+        encoding="utf-8",
+    )
+    provider = load_settings().providers["fixture"]
+    assert provider.model_selected is False
+    assert switch_active_provider(provider)[0] is False
+
+
+@pytest.mark.parametrize("variable", ["$KEY", "INVALID VARIABLE", "", "KEY=private-value"])
+def test_environment_header_names_are_validated(variable):
+    with pytest.raises(ValueError):
+        gateway(env_http_headers={"X-API-Key": variable})

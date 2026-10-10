@@ -11,6 +11,8 @@ Codex separates the inference model from its connection:
 
 Custom IDs must match `model_provider`. They do not need to be the endpoint's vendor name. Reserved built-in IDs cannot be repurposed as unrelated connections.
 
+If saved connections share a Codex ID, the saved active connection resolves that identity. An ambiguous ID without an active match stops loading instead of guessing. Native endpoint, transport and authentication fields replace stale imported values; a connection without an explicit model still needs model selection. Credentials may be supplied through a configured key or literal/environment HTTP headers.
+
 A compatible connection needs a model ID and protocol in addition to its endpoint and credentials. Current Codex uses the Responses protocol. Chat Completions and Anthropic Messages services require a compatible adapter.
 
 ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Codex manage sign-in and refresh. An API key authorizes the selected API endpoint; a subscription does not establish access to an unrelated gateway.

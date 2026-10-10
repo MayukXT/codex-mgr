@@ -13,7 +13,7 @@ from rich.text import Text
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import activate_provider
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
-from codex_mgr.core.runner import launch_codex
+from codex_mgr.core.resume import start_session
 from codex_mgr.tui.doctor_view import render_doctor_report
 from codex_mgr.tui.model_picker import manage_provider_models
 from codex_mgr.tui.portable_view import run_portable_menu
@@ -26,7 +26,6 @@ from codex_mgr.tui.session_picker import (
 )
 from codex_mgr.utils.display import (
     console,
-    get_symbol,
     print_banner,
     print_error,
     print_success,
@@ -89,10 +88,8 @@ def run_main_dashboard() -> None:
             interactive_resume_session()
 
         elif action == "new":
-            console.print(
-                f"\n[bold accent]{get_symbol('rocket')} Launching fresh Codex session with {active_name}...[/]\n"
-            )
-            launch_codex()
+            code, message = start_session(settings=settings)
+            (print_success if code == 0 else print_error)(message)
 
         elif action == "switch":
             _handle_switch_provider()

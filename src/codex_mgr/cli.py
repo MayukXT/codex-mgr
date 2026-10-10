@@ -18,7 +18,7 @@ from codex_mgr.core.activation import activate_provider, recover_pending_activat
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
 from codex_mgr.core.providers import delete_provider
-from codex_mgr.core.resume import resume_session
+from codex_mgr.core.resume import resume_session, start_session
 from codex_mgr.core.sessions import (
     AmbiguousSessionError,
     find_session_by_id_or_title,
@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--version", action="version", version=f"codex-mgr {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
+
+    p_start = subparsers.add_parser(
+        "start", help="Activate a connection and start a fresh Codex session"
+    )
+    p_start.add_argument("prompt", nargs="?", help="Optional initial prompt")
+    p_start.add_argument("--provider", dest="provider_id", help="Configured connection ID")
 
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume a session (interactive or direct ID)")
@@ -280,6 +286,11 @@ def _main(argv: list[str] | None = None) -> int:
         ok, msg = recover_pending_activation()
         (print_success if ok else print_error)(msg)
         return 0 if ok else 1
+
+    elif args.command == "start":
+        code, message = start_session(args.provider_id, prompt=args.prompt)
+        (print_success if code == 0 else print_error)(message)
+        return code
 
     elif args.command == "doctor":
         return 0 if render_doctor_report(network=args.network) else 1

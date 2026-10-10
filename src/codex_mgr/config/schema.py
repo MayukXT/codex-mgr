@@ -127,22 +127,30 @@ class ProviderConfig(BaseModel):
 
     @field_validator("http_headers", "env_http_headers")
     @classmethod
-    def valid_headers(cls, value):
+    def valid_headers(cls, value, info):
         for header, content in (value or {}).items():
             if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", header) or any(
                 ord(c) < 32 for c in content
             ):
                 raise ValueError("Headers must use valid names and printable values.")
+            if info.field_name == "env_http_headers" and not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*", content
+            ):
+                raise ValueError("Environment headers require an environment-variable name.")
         return value
 
 
 class AppPreferences(BaseModel):
     """User preferences for tool behavior."""
 
+    model_config = ConfigDict(extra="forbid")
+
     auto_backup: bool = Field(default=True, description="Create automatic session snapshots")
     confirm_bridge: bool = Field(default=True, description="Prompt before auto-bridging sessions")
     ascii_mode: bool = Field(default=False, description="Force plain ASCII symbols")
-    proxy_port: int = Field(default=4099, description="Port for local adapter proxy")
+    proxy_port: int = Field(
+        default=4099, ge=1024, le=65535, description="Port for local adapter proxy"
+    )
 
 
 class CmgrSettings(BaseModel):
@@ -150,7 +158,7 @@ class CmgrSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = Field(default=1, description="Schema version")
+    version: Literal[1] = Field(default=1, description="Schema version")
     _source_bytes: bytes | None = PrivateAttr(default=None)
     _loaded: bool = PrivateAttr(default=False)
     active_provider_id: str = Field(default="openai", description="Currently active provider ID")

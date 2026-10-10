@@ -57,6 +57,37 @@ def preview_resume(
         )
 
 
+def start_session(
+    provider_id: str | None = None,
+    *,
+    prompt: str | None = None,
+    settings: CmgrSettings | None = None,
+) -> tuple[int, str]:
+    """Use the same credential validation and activation as session resumption."""
+    try:
+        if prompt is not None and "\x00" in prompt:
+            return 1, "The initial prompt cannot contain a null character."
+        settings = settings or load_settings()
+        provider = _target(settings, provider_id)
+        ok, message = apply_settings(settings, activate_provider_id=provider.id)
+        if not ok:
+            return 1, message
+        code = launch_codex(prompt=prompt)
+        return (
+            code,
+            "Codex closed."
+            if code == 0
+            else "Codex exited unsuccessfully; the selected configuration remains available.",
+        )
+    except (ConfigurationError, FileConflictError) as exc:
+        return 1, str(exc)
+    except (OSError, ValueError, RuntimeError):
+        return (
+            1,
+            "Session was not started. Check configuration, selected credentials and pending recovery.",
+        )
+
+
 def resume_session(
     session: SessionItem,
     provider_id: str | None = None,

@@ -41,7 +41,16 @@ def _import_configuration(settings: CmgrSettings) -> None:
     raw = read_config_toml()
     effective = effective_configuration(raw)
     selected = effective.get("model_provider", "openai")
-    existing = next((p for p in settings.providers.values() if connection_id(p) == selected), None)
+    matches = [p for p in settings.providers.values() if connection_id(p) == selected]
+    active = settings.providers.get(settings.active_provider_id)
+    if active in matches:
+        existing = active
+    elif len(matches) > 1:
+        raise ValueError(
+            "Several manager connections share the selected Codex ID. Resolve their identities before applying changes."
+        )
+    else:
+        existing = matches[0] if matches else None
     table = raw.get("model_providers", {}).get(selected, {})
     if existing is None:
         if selected == "openai" and not table:
@@ -52,6 +61,7 @@ def _import_configuration(settings: CmgrSettings) -> None:
                 base_url="https://api.openai.com/v1",
                 auth_type="official_oauth",
                 default_model=effective.get("model", "coding-model"),
+                model_selected=bool(effective.get("model")),
             )
             settings.providers[identifier] = existing
         else:
@@ -66,12 +76,22 @@ def _import_configuration(settings: CmgrSettings) -> None:
     existing.context_window_limit = effective.get("model_context_window")
     if table.get("base_url") and existing.auth_type != "official_oauth":
         existing.base_url = table["base_url"]
-    if table.get("env_key"):
-        existing.auth_token = "$" + table["env_key"]
-        existing.auth_type = "env_var"
-    elif table.get("experimental_bearer_token"):
-        existing.auth_token = table["experimental_bearer_token"]
-        existing.auth_type = "bearer_token"
+    if existing.auth_type != "official_oauth":
+        existing.wire_api = table.get("wire_api", "responses")
+        existing.http_headers = table.get("http_headers")
+        existing.env_http_headers = table.get("env_http_headers")
+        if table.get("env_key"):
+            existing.auth_token = "$" + table["env_key"]
+            existing.auth_type = "env_var"
+        elif table.get("experimental_bearer_token"):
+            existing.auth_token = table["experimental_bearer_token"]
+            existing.auth_type = "bearer_token"
+        else:
+            existing.auth_token = None
+            existing.auth_type = (
+                "bearer_token" if existing.http_headers or existing.env_http_headers else "none"
+            )
+    settings.providers[existing.id] = ProviderConfig.model_validate(existing.model_dump())
 
 
 def _provider_from_table(selected, table, effective):
@@ -92,7 +112,9 @@ def _provider_from_table(selected, table, effective):
         base_url=base,
         auth_type="env_var" if env else "bearer_token" if token else "none",
         auth_token=token,
+        wire_api=table.get("wire_api", "responses"),
         default_model=effective.get("model", "coding-model"),
+        model_selected=bool(effective.get("model")),
         http_headers=table.get("http_headers"),
         env_http_headers=table.get("env_http_headers"),
     )
@@ -107,7 +129,12 @@ def load_settings() -> CmgrSettings:
         if raw is not None
         else CmgrSettings(providers={"openai": get_default_presets()["openai"]})
     )
-    _import_configuration(settings)
+    try:
+        _import_configuration(settings)
+    except (ValidationError, TypeError, AttributeError, KeyError) as exc:
+        raise ValueError(
+            "Invalid selected Codex connection; repair its definition before changing settings."
+        ) from exc
     settings._source_bytes = raw
     settings._loaded = True
     return settings

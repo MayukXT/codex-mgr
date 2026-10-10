@@ -47,6 +47,7 @@ cmgr sessions --workspace .  # Sessions created in this directory
 cmgr switch                  # Show provider IDs and the saved active provider
 cmgr doctor                  # Read local diagnostics without changing files
 cmgr doctor --network        # Also check API catalog access; no inference request
+cmgr start --provider my-api # Apply the connection and start a new Codex session
 cmgr recover                 # Recover an interrupted configuration change
 cmgr resume SESSION_UUID --to my-api
 cmgr restore SESSION_UUID --list
@@ -57,6 +58,8 @@ cmgr update --check
 ```
 
 `cmgr resume` activates the selected connection and model before launching Codex. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+
+`cmgr start --provider my-api "INITIAL PROMPT"` uses the same selected credential and activation checks for a fresh session. Prompt text is passed as one literal argument to Codex. On Windows, supported npm command wrappers are resolved to the packaged native executable; unresolved shell wrappers require adding the native executable to PATH. Codex errors and cancellation return a nonzero status.
 
 `cmgr doctor` reports failed, warning and unchecked states separately. It does not establish inference or tool compatibility. Failed diagnostics and unavailable update checks return a nonzero exit code. `cmgr update` installs the checked stable release with the current Python interpreter's pip, verifies its installed version, and asks you to restart. If pip cannot manage that environment, use the package manager that installed it.
 

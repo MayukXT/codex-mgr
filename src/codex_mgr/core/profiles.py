@@ -154,18 +154,18 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
         table["requires_openai_auth"] = False
         if provider.auth_type != "none":
             token = provider.auth_token
-            if not token:
+            if not token and not provider.http_headers and not provider.env_http_headers:
                 raise ConfigurationError(
                     "An API key or environment-variable reference is required."
                 )
-            if token.startswith("$"):
+            if token and token.startswith("$"):
                 variable = token[1:]
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
                     raise ConfigurationError("Invalid credential environment-variable name.")
                 table["env_key"] = variable
-            elif provider.auth_type == "env_var":
+            elif token and provider.auth_type == "env_var":
                 raise ConfigurationError("An environment credential must use $VARIABLE syntax.")
-            else:
+            elif token:
                 table["experimental_bearer_token"] = token
         if provider.http_headers is not None:
             table["http_headers"] = provider.http_headers
