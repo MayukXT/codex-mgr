@@ -535,9 +535,18 @@ def _execute_native(tmp_path, command, environment, *, session=None):
     return events
 
 
-@pytest.mark.parametrize("protocol", ["chat", "messages"])
+@pytest.mark.parametrize(
+    "protocol,thinking_mode,effort",
+    [
+        ("chat", None, None),
+        ("messages", None, None),
+        ("messages", "disabled", "medium"),
+        ("messages", "adaptive", "max"),
+        ("messages", "between_tools", "high"),
+    ],
+)
 def test_native_verified_launch_overrides_preserve_original_configuration(
-    protocol, tmp_path, monkeypatch
+    protocol, thinking_mode, effort, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
     home = get_codex_home()
@@ -565,6 +574,7 @@ def test_native_verified_launch_overrides_preserve_original_configuration(
     binary = find_codex_binary()
     assert binary is not None
     with upstream(protocol) as (provider, received, _):
+        provider.messages_thinking, provider.reasoning_effort = thinking_mode, effort
         identity = None
         for session in (None, "resume"):
             with AdapterLaunch(provider, cwd=work) as scope:
@@ -598,6 +608,10 @@ def test_native_verified_launch_overrides_preserve_original_configuration(
                 assert header["payload"]["model_provider"] == adapter_connection_id(provider)
         assert len(received) == 2
         assert all(request[2]["model"] == provider.default_model for request in received)
+        if thinking_mode is not None:
+            assert all(request[2]["thinking"]["type"] == thinking_mode for request in received)
+            assert all(request[2]["output_config"] == {"effort": effort} for request in received)
+            assert all("budget_tokens" not in request[2]["thinking"] for request in received)
         assert config.read_bytes() == original
         assert not (home / "cmgr.json").exists()
 
@@ -818,8 +832,9 @@ def test_native_custom_patch_result_and_resume_round_trip(
 
 
 @pytest.mark.parametrize("summary", ["none", "auto"])
+@pytest.mark.parametrize("thinking_mode", [None, "enabled", "adaptive", "between_tools"])
 def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
-    summary, tmp_path, monkeypatch
+    thinking_mode, summary, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
     signed = {
@@ -867,6 +882,7 @@ def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
 
     with upstream("messages", responder=respond) as (provider, _, _):
         provider.reasoning_budget = 1024
+        provider.messages_thinking = thinking_mode
         provider.messages_summary = summary
         with AdapterRuntime(provider) as runtime:
             events = launch(tmp_path, runtime, writable=True, reasoning=True, summary=summary)
@@ -890,10 +906,18 @@ def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
                 tmp_path, restarted, session=session, writable=True, reasoning=True, summary=summary
             )
     assert len(replies) == 3
-    assert all(
-        body["thinking"]["display"] == ("summarized" if summary == "auto" else "omitted")
-        for body in replies
-    )
+    assert all(body["thinking"]["type"] == (thinking_mode or "enabled") for body in replies)
+    if thinking_mode == "between_tools":
+        assert all(body["thinking"] == {"type": "between_tools"} for body in replies)
+    else:
+        assert all(
+            body["thinking"]["display"] == ("summarized" if summary == "auto" else "omitted")
+            for body in replies
+        )
+    if thinking_mode is not None:
+        assert all(body["output_config"] == {"effort": "medium"} for body in replies)
+    if thinking_mode in {"adaptive", "between_tools"}:
+        assert all("budget_tokens" not in body["thinking"] for body in replies)
     for body in replies[1:]:
         blocks = [item for message in body["messages"] for item in message["content"]]
         assert [item for item in blocks if item["type"] in {"thinking", "redacted_thinking"}] == [

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from codex_mgr.core.adapters.continuations import ContinuationCodec, MessagesPrefix
+from codex_mgr.core.adapters.messages_controls import apply_mode, validate_model, validate_sampling
 from codex_mgr.core.adapters.tools import (
     ProtocolError,
     ToolRegistry,
@@ -51,6 +52,7 @@ class AdaptedRequest:
     payload: dict = field(repr=False)
     tools: ToolRegistry = field(repr=False)
     continuations: ContinuationCodec | None = field(default=None, repr=False)
+    summaries: bool = field(default=False, repr=False)
 
 
 def _image(block, protocol):
@@ -265,7 +267,9 @@ def _choice(request, protocol, registry):
     return result, parallel
 
 
-def _controls(request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary):
+def _legacy_controls(
+    request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary
+):
     cap = request.get("max_output_tokens")
     if cap is None:
         cap = max_output_tokens
@@ -350,6 +354,65 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget, th
             raise ProtocolError("Structured output needs a verified adapter mapping.")
 
 
+def _controls(
+    request,
+    payload,
+    protocol,
+    max_output_tokens,
+    thinking_budget,
+    thinking_summary,
+    thinking_mode,
+    model_info,
+):
+    if protocol != "messages" and thinking_mode is not None:
+        raise ProtocolError("Thinking modes require a Messages connection.")
+    if (
+        protocol == "messages"
+        and model_info is not None
+        and max_output_tokens is None
+        and model_info.max_output_tokens is not None
+    ):
+        max_output_tokens = min(8192, model_info.max_output_tokens)
+    if thinking_mode is None:
+        _legacy_controls(
+            request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary
+        )
+        if protocol == "messages":
+            validate_model(
+                model_info,
+                payload["model"],
+                payload.get("thinking", {}).get("type", "disabled"),
+                None,
+                payload["max_tokens"],
+            )
+        return payload.get("thinking", {}).get("display") == "summarized"
+    reasoning = request.get("reasoning")
+    if reasoning is not None and (
+        not isinstance(reasoning, dict)
+        or set(reasoning) - {"effort", "summary", "context"}
+        or reasoning.get("context") is not None
+    ):
+        raise ProtocolError("Invalid or unsupported reasoning controls.")
+    reasoning = reasoning or {}
+    effort = reasoning.get("effort")
+    summary = reasoning.get("summary")
+    summary = thinking_summary if summary is None else summary
+    if summary not in {None, "none", "auto"}:
+        raise ProtocolError("Reasoning summaries need a verified adapter mapping.")
+    common = {**request, "reasoning": {}}
+    _legacy_controls(common, payload, protocol, max_output_tokens, None, None)
+    apply_mode(
+        payload,
+        mode=thinking_mode,
+        effort=effort,
+        budget=thinking_budget,
+        summary=summary,
+        model=model_info,
+    )
+    validate_sampling(request, mode=thinking_mode, model=model_info)
+    return summary == "auto"
+
+
 def _adapt_request(
     request,
     protocol,
@@ -357,6 +420,8 @@ def _adapt_request(
     max_output_tokens=None,
     thinking_budget=None,
     thinking_summary=None,
+    thinking_mode=None,
+    model_info=None,
     continuations=None,
 ):
     """Map a complete supported history; no HTTP, files, logging or input mutation."""
@@ -440,10 +505,19 @@ def _adapt_request(
     payload["messages"].extend(_history(items, protocol, registry, continuations, model, prefix))
     if not any(message["role"] in {"user", "assistant", "tool"} for message in payload["messages"]):
         raise ProtocolError("Supply conversation input in addition to system instructions.")
-    _controls(request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary)
+    summaries = _controls(
+        request,
+        payload,
+        protocol,
+        max_output_tokens,
+        thinking_budget,
+        thinking_summary,
+        thinking_mode,
+        model_info,
+    )
     if len(encoded_json(payload).encode()) > _MAX_REQUEST_BYTES:
         raise ProtocolError("Translated request exceeds the size limit.")
-    return AdaptedRequest(protocol, model, deepcopy(payload), registry, continuations)
+    return AdaptedRequest(protocol, model, deepcopy(payload), registry, continuations, summaries)
 
 
 def adapt_request(
@@ -453,6 +527,8 @@ def adapt_request(
     max_output_tokens=None,
     thinking_budget=None,
     thinking_summary=None,
+    thinking_mode=None,
+    model_info=None,
     continuations=None,
 ):
     try:
@@ -462,6 +538,8 @@ def adapt_request(
             max_output_tokens=max_output_tokens,
             thinking_budget=thinking_budget,
             thinking_summary=thinking_summary,
+            thinking_mode=thinking_mode,
+            model_info=model_info,
             continuations=continuations,
         )
     except ProtocolError:

@@ -321,6 +321,15 @@ def select_model(provider, model_id):
     provider.model_selected = True
     if model.wire_api:
         provider.wire_api = model.wire_api
+    if (
+        provider.wire_api == "anthropic_proxy"
+        and provider.messages_thinking is None
+        and provider.reasoning_enabled
+        and model.thinking_types.get("adaptive") is True
+        and model.thinking_types.get("enabled") is False
+        and model.thinking_types.get("disabled") is False
+    ):
+        provider.messages_thinking = "adaptive"
     if model.default_reasoning_effort:
         provider.reasoning_effort = model.default_reasoning_effort
     elif (

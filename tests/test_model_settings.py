@@ -9,10 +9,11 @@ from rich.cells import cell_len
 from rich.console import Console
 
 from codex_mgr.cli import main
-from codex_mgr.config.schema import CmgrSettings, ProviderConfig
+from codex_mgr.config.schema import CmgrSettings, ModelInfo, ProviderConfig
 from codex_mgr.config.settings import load_settings, save_settings
 from codex_mgr.core.adapters import launch
 from codex_mgr.core.models import save_model_settings
+from codex_mgr.core.providers import store_provider
 from codex_mgr.tui import advanced_controls, model_picker
 from codex_mgr.utils.paths import get_cmgr_settings_path, get_config_toml_path
 
@@ -144,7 +145,17 @@ def test_responses_model_save_keeps_guarded_native_activation(active):
         ("chat", ["context", "effort", "output", "streaming", "save", None]),
         (
             "anthropic_proxy",
-            ["context", "effort", "output", "streaming", "budget", "summary", "save", None],
+            [
+                "context",
+                "effort",
+                "thinking",
+                "output",
+                "streaming",
+                "budget",
+                "summary",
+                "save",
+                None,
+            ],
         ),
     ],
 )
@@ -276,3 +287,132 @@ def test_control_summary_stays_spaced_and_bounded_with_long_markup_labels(
     assert "Thinking budget:" in rows[8] and "Summaries:" in rows[9]
     if ascii_mode:
         assert output.getvalue().isascii()
+
+
+@pytest.mark.parametrize("mode", ["adaptive", "disabled", "between_tools"])
+def test_modern_menu_saves_independent_effort_and_retains_inactive_budget(
+    mode, monkeypatch, no_adapter_handoff
+):
+    settings = configured()
+    provider = settings.providers["fixture"]
+    provider.reasoning_budget, provider.reasoning_enabled = 10000, False
+    save_settings(settings)
+    actions = iter(["thinking", mode, "effort", "high", "save"])
+
+    def choose(message, choices, **kwargs):
+        value = next(actions)
+        if message == "Model settings" and value == "effort":
+            assert "budget" not in [choice.value for choice in choices]
+        return value
+
+    monkeypatch.setattr(advanced_controls, "select_menu", choose)
+    original_config = get_config_toml_path().read_bytes()
+    advanced_controls.run_advanced_controls()
+    saved = load_settings().providers["fixture"]
+    assert saved.messages_thinking == mode and saved.reasoning_effort == "high"
+    assert saved.reasoning_budget == 10000 and saved.reasoning_enabled is False
+    assert get_config_toml_path().read_bytes() == original_config
+    assert all(boundary.call_count == 0 for boundary in no_adapter_handoff)
+
+
+@pytest.mark.parametrize("choose_default", [False, True])
+def test_modern_effort_back_and_default_preserve_thinking_mode(choose_default, monkeypatch):
+    settings = configured()
+    provider = settings.providers["fixture"]
+    provider.messages_thinking, provider.reasoning_effort = "disabled", "medium"
+    save_settings(settings)
+    actions = iter(["effort", "submenu", "save"])
+
+    def choose(message, choices, **kwargs):
+        value = next(actions)
+        return (
+            choices[0].value
+            if value == "submenu" and choose_default
+            else (None if value == "submenu" else value)
+        )
+
+    monkeypatch.setattr(advanced_controls, "select_menu", choose)
+    advanced_controls.run_advanced_controls()
+    saved = load_settings().providers["fixture"]
+    assert saved.messages_thinking == "disabled"
+    assert saved.reasoning_effort == (None if choose_default else "medium")
+
+
+def test_mode_picker_withholds_negative_flags_and_uses_valid_focus_after_refresh(monkeypatch):
+    provider = configured().providers["fixture"]
+    provider.messages_thinking = "enabled"
+    provider.models = [
+        ModelInfo(
+            id=provider.default_model,
+            name="Synthetic",
+            is_custom=True,
+            thinking_types={"adaptive": True, "enabled": False, "disabled": False},
+        )
+    ]
+
+    def back(message, choices, default, **kwargs):
+        assert "enabled" not in [choice.value for choice in choices]
+        assert "disabled" not in [choice.value for choice in choices]
+        assert choices[1].name == "Adaptive"
+        assert choices[2].name == "Between tools (unverified)"
+        assert default is choices[0].value
+
+    monkeypatch.setattr(advanced_controls, "select_menu", back)
+    advanced_controls._choose_mode(provider)
+    assert provider.messages_thinking == "enabled"
+
+
+@pytest.mark.parametrize("activate", [False, True])
+def test_active_adapter_connection_edits_use_validated_settings_only(activate, no_adapter_handoff):
+    settings = configured(active=not activate)
+    provider = settings.providers["fixture"].model_copy(deep=True)
+    provider.messages_thinking, provider.reasoning_effort = "adaptive", "max"
+    provider.base_url = "https://edited.invalid/v1"
+    provider.http_headers = {"X-Synthetic": "public-fixture"}
+    original_config = get_config_toml_path().read_bytes()
+    assert store_provider(settings, provider, replace=True, activate=activate)[0]
+    saved = load_settings()
+    assert saved.active_provider_id == "fixture"
+    assert saved.providers["fixture"].messages_thinking == "adaptive"
+    assert saved.providers["fixture"].base_url == provider.base_url
+    assert saved.providers["fixture"].http_headers == provider.http_headers
+    assert get_config_toml_path().read_bytes() == original_config
+    assert all(boundary.call_count == 0 for boundary in no_adapter_handoff)
+
+
+def test_failed_adapter_activation_restores_candidate_and_keeps_original_files(no_adapter_handoff):
+    settings = configured(active=False)
+    original = settings.providers["fixture"]
+    candidate = original.model_copy(
+        update={"messages_thinking": "enabled", "reasoning_budget": 100}
+    )
+    before = (get_cmgr_settings_path().read_bytes(), get_config_toml_path().read_bytes())
+    assert not store_provider(settings, candidate, replace=True, activate=True)[0]
+    assert settings.providers["fixture"] is original and settings.active_provider_id == "other"
+    assert (get_cmgr_settings_path().read_bytes(), get_config_toml_path().read_bytes()) == before
+
+
+@pytest.mark.parametrize("width", [40, 60, 80, 120])
+@pytest.mark.parametrize("ascii_mode", [False, True])
+def test_modern_summary_hides_inactive_budget_and_shows_reported_output_default(
+    width, ascii_mode, monkeypatch
+):
+    provider = configured().providers["fixture"]
+    provider.messages_thinking, provider.reasoning_budget = "adaptive", 10000
+    provider.models = [
+        ModelInfo(
+            id=provider.default_model, name="Synthetic", is_custom=True, max_output_tokens=4096
+        )
+    ]
+    provider.name = "[red]" + "Long imported name " * 20
+    output = StringIO()
+    monkeypatch.setattr(
+        advanced_controls, "console", Console(file=output, width=width, color_system=None)
+    )
+    monkeypatch.setattr(advanced_controls, "supports_unicode", lambda: not ascii_mode)
+    advanced_controls._show_settings(provider)
+    text = output.getvalue()
+    assert "Thinking: Adaptive" in text and "Thinking budget:" not in text
+    assert "Adapter default (4,096)" in text
+    assert all(cell_len(row) <= width for row in text.splitlines())
+    assert not ascii_mode or text.isascii()

@@ -173,19 +173,14 @@ def _messages_output(body, adapted):
             )
             wire_block = {"type": "text", "text": content["text"]}
         elif block.get("type") in {"thinking", "redacted_thinking"}:
-            if (
-                adapted.continuations is None
-                or adapted.payload.get("thinking", {}).get("type") != "enabled"
-            ):
-                raise ProtocolError("Messages thinking needs an enabled, bound continuation.")
+            if adapted.continuations is None or adapted.payload.get("thinking", {}).get(
+                "type"
+            ) not in {"enabled", "adaptive", "between_tools"}:
+                raise ProtocolError("Messages thinking needs an active, bound continuation.")
             encrypted = adapted.continuations.seal(block, adapted.model, prefix=prefix.digest)
             wire_block = block
             summary = []
-            if (
-                block["type"] == "thinking"
-                and adapted.payload["thinking"].get("display") == "summarized"
-                and block["thinking"]
-            ):
+            if block["type"] == "thinking" and adapted.summaries and block["thinking"]:
                 summary = [{"type": "summary_text", "text": block["thinking"]}]
             output.append(
                 {

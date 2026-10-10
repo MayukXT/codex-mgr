@@ -30,10 +30,11 @@ def adapter_connection_id(provider):
 
 
 def _controls(provider):
-    effort = provider.reasoning_effort if provider.reasoning_enabled else "none"
-    if not provider.reasoning_enabled:
+    modern = provider.wire_api == "anthropic_proxy" and provider.messages_thinking is not None
+    effort = provider.reasoning_effort if modern or provider.reasoning_enabled else "none"
+    if not modern and not provider.reasoning_enabled:
         provider.reasoning_budget = None
-    if provider.wire_api == "anthropic_proxy":
+    if provider.wire_api == "anthropic_proxy" and not modern:
         if provider.reasoning_budget is None:
             if effort not in {None, "none"}:
                 raise ConfigurationError("Messages reasoning needs an explicit thinking budget.")
@@ -61,7 +62,14 @@ def _controls(provider):
             },
             "messages" if provider.wire_api == "anthropic_proxy" else "chat",
             max_output_tokens=provider.max_output_tokens,
-            thinking_budget=provider.reasoning_budget,
+            thinking_budget=provider.reasoning_budget
+            if provider.wire_api != "anthropic_proxy"
+            or provider.messages_thinking in {None, "enabled"}
+            else None,
+            thinking_mode=provider.messages_thinking
+            if provider.wire_api == "anthropic_proxy"
+            else None,
+            model_info=model if provider.wire_api == "anthropic_proxy" else None,
         )
     except ProtocolError as exc:
         raise ConfigurationError(str(exc)) from exc

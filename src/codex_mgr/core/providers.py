@@ -108,13 +108,18 @@ def store_provider(settings, provider, *, replace=False, activate=False):
     if current is not None and current.model_selected and not replace:
         return False, "That connection ID already exists. Edit it or choose another ID."
     settings.providers[provider.id] = provider
-    ok, message = apply_settings(
-        settings,
-        activate_provider_id=provider.id
-        if activate or settings.active_provider_id == provider.id
-        else None,
-    )
+    previous_active = settings.active_provider_id
+    active = activate or settings.active_provider_id == provider.id
+    if active and provider.wire_api in {"chat", "anthropic_proxy"}:
+        from codex_mgr.core.models import save_model_settings
+
+        if activate:
+            settings.active_provider_id = provider.id
+        ok, message = save_model_settings(settings, provider.id)
+    else:
+        ok, message = apply_settings(settings, activate_provider_id=provider.id if active else None)
     if not ok:
+        settings.active_provider_id = previous_active
         if current is None:
             settings.providers.pop(provider.id, None)
         else:

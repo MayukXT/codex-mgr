@@ -37,6 +37,10 @@ class ModelInfo(BaseModel):
     thinking_types: dict[
         Literal["adaptive", "enabled", "disabled", "between_tools"], StrictBool
     ] = Field(default_factory=dict)
+    # Optional reviewed dialect constraints, independent of aggregate API support.
+    forced_tools_supported: StrictBool | None = None
+    sampling_default_only: StrictBool | None = None
+    disabled_high_effort_supported: StrictBool | None = None
     tools_supported: bool | None = None
     input_modalities: list[str] = Field(default_factory=list)
     wire_api: Literal["responses", "chat", "anthropic_proxy"] | None = None
@@ -119,6 +123,10 @@ class ProviderConfig(BaseModel):
     messages_summary: Literal["none", "auto"] = Field(
         default="none",
         description="Opt-in display of provider-supplied Messages thinking summaries",
+    )
+    messages_thinking: Literal["adaptive", "enabled", "disabled", "between_tools"] | None = Field(
+        default=None,
+        description="Explicit Messages thinking mode; None retains legacy budget controls",
     )
 
     @field_validator("id", "codex_provider_id")

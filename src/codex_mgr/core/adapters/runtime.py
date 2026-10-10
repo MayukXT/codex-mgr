@@ -18,7 +18,7 @@ from codex_mgr.core.adapters.sse import encode_event
 from codex_mgr.core.adapters.streaming import async_adapt_stream, buffered_stream
 from codex_mgr.core.adapters.tools import ProtocolError, encoded_json, object_json
 from codex_mgr.core.auth import CredentialError
-from codex_mgr.core.models import provider_headers
+from codex_mgr.core.models import model_metadata, provider_headers
 
 _MAX_BODY = 8 * 1024 * 1024
 _MAX_HEADER = 16 * 1024
@@ -137,8 +137,12 @@ class AdapterRuntime:
             else None
         )
         self._model = provider.default_model
+        self._provider = selected
         self._max_output_tokens = provider.max_output_tokens
-        self._thinking_budget = provider.reasoning_budget
+        self._thinking_mode = provider.messages_thinking if self._protocol == "messages" else None
+        self._thinking_budget = (
+            provider.reasoning_budget if self._thinking_mode in {None, "enabled"} else None
+        )
         self._thinking_summary = provider.messages_summary if self._protocol == "messages" else None
         self._upstream_streaming = provider.streaming
         self._max_active, self._idle_timeout, self._request_timeout = (
@@ -322,6 +326,10 @@ class AdapterRuntime:
                 max_output_tokens=self._max_output_tokens,
                 thinking_budget=self._thinking_budget,
                 thinking_summary=self._thinking_summary,
+                thinking_mode=self._thinking_mode,
+                model_info=model_metadata(self._provider, request.get("model"))
+                if self._protocol == "messages"
+                else None,
                 continuations=self._continuations,
             )
         except (

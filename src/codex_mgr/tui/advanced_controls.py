@@ -7,6 +7,7 @@ from InquirerPy.base.control import Choice
 from rich.text import Text
 
 from codex_mgr.config.settings import load_settings
+from codex_mgr.core.adapters.messages_controls import EFFORTS, MODES
 from codex_mgr.core.models import model_metadata, save_model_settings
 from codex_mgr.utils.display import (
     console,
@@ -20,10 +21,15 @@ from codex_mgr.utils.display import (
 
 def _show_settings(provider):
     adapter = provider.wire_api in {"chat", "anthropic_proxy"}
-    effort = provider.reasoning_effort or (
-        "Not set" if provider.wire_api == "anthropic_proxy" else "Model default"
+    modern = provider.wire_api == "anthropic_proxy" and provider.messages_thinking is not None
+    model = model_metadata(provider, provider.default_model)
+    output_default = (
+        min(8192, model.max_output_tokens) if model and model.max_output_tokens else 8192
     )
-    if not provider.reasoning_enabled:
+    effort = provider.reasoning_effort or (
+        "Not set" if provider.wire_api == "anthropic_proxy" and not modern else "Model default"
+    )
+    if not modern and not provider.reasoning_enabled:
         effort = "Off"
     rows = [
         (provider.name, "bold"),
@@ -48,7 +54,7 @@ def _show_settings(provider):
                     + (
                         f"{provider.max_output_tokens:,}"
                         if provider.max_output_tokens
-                        else "Adapter default (8,192)"
+                        else f"Adapter default ({output_default:,})"
                         if provider.wire_api == "anthropic_proxy"
                         else "Provider default"
                     ),
@@ -58,23 +64,35 @@ def _show_settings(provider):
             ]
         )
     if provider.wire_api == "anthropic_proxy":
-        rows.extend(
-            [
-                (
-                    "Thinking budget: "
-                    + (f"{provider.reasoning_budget:,}" if provider.reasoning_budget else "None")
-                    + (
-                        " (inactive)"
-                        if provider.reasoning_budget and not provider.reasoning_enabled
-                        else ""
+        if modern:
+            rows.insert(4, ("Thinking: " + _mode_label(provider.messages_thinking), None))
+        if not modern or provider.messages_thinking == "enabled":
+            rows.extend(
+                [
+                    (
+                        "Thinking budget: "
+                        + (
+                            f"{provider.reasoning_budget:,}"
+                            if provider.reasoning_budget
+                            else "None"
+                        )
+                        + (
+                            " (inactive)"
+                            if provider.reasoning_budget
+                            and (
+                                modern
+                                and provider.messages_thinking != "enabled"
+                                or not modern
+                                and not provider.reasoning_enabled
+                            )
+                            else ""
+                        ),
+                        None,
                     ),
-                    None,
-                ),
-                (
-                    "Summaries: " + ("Shown" if provider.messages_summary == "auto" else "Hidden"),
-                    None,
-                ),
-            ]
+                ]
+            )
+        rows.append(
+            ("Summaries: " + ("Shown" if provider.messages_summary == "auto" else "Hidden"), None)
         )
     console.print()
     overflow = "ellipsis" if supports_unicode() else "crop"
@@ -108,6 +126,40 @@ def _token_limit(provider, field, message):
     setattr(provider, field, parsed)
 
 
+def _mode_label(mode):
+    return {
+        None: "Legacy budget controls",
+        "adaptive": "Adaptive",
+        "enabled": "Manual budget",
+        "disabled": "Off",
+        "between_tools": "Between tools",
+    }[mode]
+
+
+def _choose_mode(provider):
+    model = model_metadata(provider, provider.default_model)
+    legacy = object()
+    choices = [Choice(legacy, _mode_label(None))]
+    for mode in MODES:
+        supported = model.thinking_types.get(mode) if model else None
+        if supported is not False:
+            choices.append(
+                Choice(mode, _mode_label(mode) + (" (unverified)" if supported is None else ""))
+            )
+    choices.append(Choice(None, "Back"))
+    current = provider.messages_thinking
+    value = select_menu(
+        "Thinking mode",
+        choices,
+        default=current
+        if current and any(choice.value == current for choice in choices)
+        else legacy,
+        allow_back=True,
+    )
+    if value is not None:
+        provider.messages_thinking = None if value is legacy else value
+
+
 def run_advanced_controls(provider_id: str | None = None) -> None:
     settings = load_settings()
     selected = provider_id or settings.active_provider_id
@@ -123,10 +175,14 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
             Choice("context", name="Context limit"),
             Choice("effort", name="Reasoning effort"),
         ]
+        if provider.wire_api == "anthropic_proxy":
+            choices.append(Choice("thinking", "Thinking mode"))
         if provider.wire_api in {"chat", "anthropic_proxy"}:
             choices.extend([Choice("output", "Output limit"), Choice("streaming", "Streaming")])
         if provider.wire_api == "anthropic_proxy":
-            choices.extend([Choice("budget", "Thinking budget"), Choice("summary", "Summaries")])
+            if provider.messages_thinking in {None, "enabled"}:
+                choices.append(Choice("budget", "Thinking budget"))
+            choices.append(Choice("summary", "Summaries"))
         choices.extend([Choice("save", "Save"), Choice(None, "Back")])
         action = select_menu(
             message="Model settings",
@@ -141,6 +197,8 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
             _token_limit(provider, "max_output_tokens", "Output limit (blank for default)")
         elif action == "budget":
             _token_limit(provider, "reasoning_budget", "Thinking tokens (blank for no budget)")
+        elif action == "thinking":
+            _choose_mode(provider)
         elif action == "streaming":
             value = select_menu(
                 "Streaming",
@@ -162,7 +220,14 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
         elif action == "effort":
             model = model_metadata(provider, provider.default_model)
             levels = model.supported_reasoning_levels if model else []
-            if levels:
+            modern = (
+                provider.wire_api == "anthropic_proxy" and provider.messages_thinking is not None
+            )
+            if modern:
+                levels = [level for level in (levels or EFFORTS) if level in EFFORTS]
+                if model and model.effort_supported is False:
+                    levels = []
+            if levels or modern:
                 model_default = object()
                 effort = select_menu(
                     "Reasoning effort",
@@ -190,7 +255,8 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
                     .strip()
                 )
             provider.reasoning_effort = effort or None
-            provider.reasoning_enabled = effort != "none"
+            if not modern:
+                provider.reasoning_enabled = effort != "none"
         elif action == "save":
             ok, message = save_model_settings(settings, selected)
             (print_success if ok else print_error)(message)

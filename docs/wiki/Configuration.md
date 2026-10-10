@@ -17,7 +17,21 @@ A compatible connection needs a model ID and protocol in addition to its endpoin
 
 Fresh Chat and Messages sessions use temporary routing through `cmgr start` or the menu's new-session action. The saved active connection remains the original upstream endpoint, credentials and model. Reloading manager settings preserves that selection instead of importing the unchanged native base selection over it. Running Codex directly uses its native configuration; run it through the manager to use the adapter. See [compatibility](Compatibility.md) for supported controls and current resume limits.
 
-For a Messages connection with a supported explicit thinking budget, readable summaries are optional. In that connection's entry in `cmgr.json`, set `messages_summary` to `auto` to show the provider-supplied summary, or `none` to hide it (the default). Keep a compatible `reasoning_budget`, `reasoning_effort` and output cap, then start through `cmgr start`. The launch uses temporary native summary settings and leaves `config.toml` unchanged. Hidden or redacted blocks are never expanded into readable text.
+Use **Model settings → Thinking mode** for a Messages connection. These settings also live in its entry in `cmgr.json`:
+
+| `messages_thinking` | Behavior |
+| --- | --- |
+| `adaptive` | Model decides when to think; no manual budget |
+| `enabled` | Manual thinking; `reasoning_budget` must be at least 1,024 and below the output cap |
+| `disabled` | Thinking off where the model supports it |
+| `between_tools` | No up-front thinking; requires supported between-tool behavior and effort no higher than `high` |
+| `null` or omitted | Existing budget controls; active thinking requires an explicit budget and native effort |
+
+With an explicit mode, `reasoning_effort` is independent of thinking. `low`, `medium`, `high`, `xhigh` and `max` map to the same upstream effort where supported. **Model default** removes the override; native `none` also sends no upstream effort override and does not turn off an explicit thinking mode. Set the mode to `disabled` to request off. Stored budgets remain available when switching modes but are sent only in manual mode. Known capability restrictions are validated before saving and again for the model in each request. The Messages output default is 8,192 tokens, reduced when a fresh reported model ceiling is lower.
+
+Set **Summaries** to Shown (`messages_summary = "auto"`) to display supplied summaries, or Hidden (`none`, the default). Hidden/redacted blocks are never expanded into readable text. Disabled mode requires Hidden; between-tools uses local display filtering without sending an upstream display option. Start through `cmgr start`; the launch uses temporary native controls and leaves `config.toml` unchanged. Full preserved-thinking/account enforcement remains limited as described in [compatibility](Compatibility.md).
+
+Model capabilities come from the scoped catalog or explicit manually reviewed metadata. Optional manual constraints `forced_tools_supported`, `sampling_default_only` and `disabled_high_effort_supported` describe conditional Messages behavior that aggregate thinking support does not establish. Configure them only from the endpoint's actual contract. Known exact model IDs use reviewed conditional rules only when granular mode support is fresh; gateway aliases remain unverified. The adapter refuses unverified forced-tool, sampling and disabled high-effort combinations instead of guessing.
 
 ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Codex manage sign-in and refresh. An API key authorizes the selected API endpoint; a subscription does not establish access to an unrelated gateway.
 
