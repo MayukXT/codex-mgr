@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import queue
-import subprocess
 import threading
 import time
 from collections.abc import Sequence
 
 from codex_mgr import __version__
 from codex_mgr.utils.paths import find_codex_binary
+from codex_mgr.utils.processes import BackgroundProcessError, OwnedBackgroundProcess
 
 
 class CodexRpcError(RuntimeError):
@@ -43,18 +43,15 @@ class CodexReader:
         self.timeout = timeout
         self.sequence = 0
         self.messages = queue.Queue(maxsize=128)
-        self.process = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self.reader = threading.Thread(target=self._read, daemon=True)
-        self.reader.start()
+        self._closing = threading.Event()
         try:
+            self._owner = OwnedBackgroundProcess(args)
+        except (BackgroundProcessError, OSError, ValueError) as exc:
+            raise CodexRpcError("Codex app-server could not start safely.") from exc
+        self.process = self._owner.process
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        try:
+            self.reader.start()
             self._request(
                 "initialize",
                 {
@@ -66,9 +63,17 @@ class CodexReader:
                 },
             )
             self._send({"method": "initialized", "params": {}})
-        except (CodexRpcError, OSError):
+        except BaseException:
             self.close()
             raise
+
+    def _enqueue(self, value):
+        while not self._closing.is_set():
+            try:
+                self.messages.put(value, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
     def _read(self):
         try:
@@ -78,14 +83,13 @@ class CodexReader:
                     break
                 if len(line) > 1_048_576:
                     break
-                self.messages.put(json.loads(line), timeout=self.timeout)
-        except (ValueError, OSError, queue.Full):
+                self._enqueue(json.loads(line))
+                if self._closing.is_set():
+                    break
+        except (ValueError, OSError):
             pass
         finally:
-            try:
-                self.messages.put(None, timeout=self.timeout)
-            except queue.Full:
-                pass
+            self._enqueue(None)
 
     def _send(self, message):
         try:
@@ -148,32 +152,13 @@ class CodexReader:
             values["cursor"] = cursor
 
     def close(self):
-        if self.process.stdin and not self.process.stdin.closed:
-            try:
-                self.process.stdin.close()
-            except OSError:
-                pass
-        if self.process.poll() is None:
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                # A Windows command shim can own a native child holding our pipe.
-                import os
-
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=3,
-                        check=False,
-                    )
-                else:
-                    self.process.terminate()
-                if self.process.poll() is None:
-                    self.process.kill()
-                self.process.wait(timeout=2)
-        self.reader.join(timeout=1)
+        self._closing.set()
+        try:
+            self._owner.close()
+        except (BackgroundProcessError, OSError) as exc:
+            raise CodexRpcError("Codex app-server cleanup failed.") from exc
+        if self.reader.ident is not None:
+            self.reader.join(timeout=1)
         # Never block closing a buffered pipe while its reader owns the lock.
         if not self.reader.is_alive() and self.process.stdout:
             self.process.stdout.close()
