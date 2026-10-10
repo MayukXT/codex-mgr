@@ -274,6 +274,31 @@ def test_stream_requests_explicitly_request_chat_usage():
     }
 
 
+@pytest.mark.parametrize("protocol", ["chat", "messages"])
+def test_native_reasoning_delivery_preference_does_not_require_absent_reasoning_items(protocol):
+    original = request(include=["reasoning.encrypted_content"], reasoning={"effort": "none"})
+    before = deepcopy(original)
+    adapted = adapt_request(original, protocol)
+    assert original == before and "include" not in adapted.payload
+    assert (
+        adapted.payload.get("reasoning_effort") == "none"
+        if protocol == "chat"
+        else adapted.payload["thinking"] == {"type": "disabled"}
+    )
+    with pytest.raises(ProtocolError):
+        adapt_request(
+            request(input=[{"type": "reasoning", "encrypted_content": "synthetic-private"}]),
+            protocol,
+        )
+
+
+@pytest.mark.parametrize("includes", ["reasoning.encrypted_content", {}, ["unknown"], [None]])
+@pytest.mark.parametrize("protocol", ["chat", "messages"])
+def test_unknown_or_malformed_delivery_preferences_are_rejected(includes, protocol):
+    with pytest.raises(ProtocolError, match="delivery"):
+        adapt_request(request(include=includes), protocol)
+
+
 def test_messages_refusal_keeps_exact_text_and_classification_for_native_codex():
     result = adapt_response(messages_reply(finish="refusal"), adapt_request(request(), "messages"))
     assert result["output"][0]["content"] == [

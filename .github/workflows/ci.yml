@@ -58,5 +58,5 @@ jobs:
         run: |
           npm install --global @openai/codex@0.159.0
           python -m pip install -e ".[dev]"
-      - name: Run temporary-home native configuration and session contracts
-        run: python -m pytest tests/test_native_codex.py -q
+      - name: Run temporary-home native configuration, session, and adapter contracts
+        run: python -m pytest tests/test_native_codex.py tests/test_native_adapters.py -q

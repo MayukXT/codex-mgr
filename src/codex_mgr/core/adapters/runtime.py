@@ -237,7 +237,11 @@ class AdapterRuntime:
     async def _request(self, reader):
         try:
             raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), self._request_timeout)
-        except (asyncio.LimitOverrunError, asyncio.IncompleteReadError, TimeoutError) as exc:
+        except (
+            asyncio.LimitOverrunError,
+            asyncio.IncompleteReadError,
+            asyncio.TimeoutError,
+        ) as exc:
             raise _RequestError(400) from exc
         if len(raw) > _MAX_HEADER:
             raise _RequestError(431)
@@ -286,7 +290,12 @@ class AdapterRuntime:
                 max_output_tokens=self._max_output_tokens,
                 thinking_budget=self._thinking_budget,
             )
-        except (ProtocolError, UnicodeError, asyncio.IncompleteReadError, TimeoutError) as exc:
+        except (
+            ProtocolError,
+            UnicodeError,
+            asyncio.IncompleteReadError,
+            asyncio.TimeoutError,
+        ) as exc:
             raise _RequestError(400) from exc
 
     async def _forward(self, adapted, writer):
@@ -355,7 +364,7 @@ class AdapterRuntime:
                             await self._write(writer, encode_event(event))
                     else:
                         await self._json(writer, 200, adapt_response(body, adapted))
-        except (ProtocolError, UnicodeError, httpx.HTTPError, OSError, TimeoutError):
+        except (ProtocolError, UnicodeError, httpx.HTTPError, OSError, asyncio.TimeoutError):
             if not streamed:
                 await self._json(
                     writer,
@@ -382,7 +391,7 @@ class AdapterRuntime:
                 exc.status,
                 {"error": {"message": "The local adapter rejected the request."}},
             )
-        except (OSError, TimeoutError, httpx.HTTPError):
+        except (OSError, asyncio.TimeoutError, httpx.HTTPError):
             pass
         finally:
             writer.close()
@@ -402,5 +411,5 @@ class AdapterRuntime:
                 raise
             try:
                 await asyncio.wait_for(writer.wait_closed(), self._request_timeout)
-            except (OSError, TimeoutError):
+            except (OSError, asyncio.TimeoutError):
                 pass

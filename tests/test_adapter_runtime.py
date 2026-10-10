@@ -13,6 +13,7 @@ import pytest
 from test_streaming_codecs import request, text_stream, wire
 
 from codex_mgr.config.schema import ProviderConfig
+from codex_mgr.core.adapters import runtime as runtime_module
 from codex_mgr.core.adapters.runtime import AdapterError, AdapterRuntime
 from codex_mgr.core.adapters.sse import json_events
 from codex_mgr.core.adapters.streaming import async_adapt_stream
@@ -40,7 +41,16 @@ def synthetic_loopback_http(isolated_codex_home, monkeypatch):
 
 
 @contextmanager
-def upstream(protocol="chat", *, status=200, idle=False, redirect=False, raw=None, buffered=False):
+def upstream(
+    protocol="chat",
+    *,
+    status=200,
+    idle=False,
+    redirect=False,
+    raw=None,
+    buffered=False,
+    responder=None,
+):
     received, disconnected = [], threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
@@ -70,7 +80,9 @@ def upstream(protocol="chat", *, status=200, idle=False, redirect=False, raw=Non
                 except OSError:
                     pass
             else:
-                if raw is not None:
+                if responder is not None:
+                    data = responder(received[-1][2])
+                elif raw is not None:
                     data = raw
                 elif buffered:
                     data = json.dumps(
@@ -317,6 +329,33 @@ def test_capacity_bound_and_request_header_timeout_release_owned_tasks(monkeypat
             # First response proves the request was accepted and its timeout is bounded.
             assert first.recv(4096).startswith(b"HTTP/1.1 400")
         assert len(runtime._tasks) <= 1
+
+
+def test_legacy_asyncio_timeout_class_is_handled_without_builtin_alias(monkeypatch):
+    class LegacyTimeout(Exception):
+        pass
+
+    async def timed_out(awaitable, *_):
+        awaitable.close()
+        raise LegacyTimeout
+
+    class Reader:
+        async def readuntil(self, _):
+            return b""
+
+    monkeypatch.setattr(asyncio, "TimeoutError", LegacyTimeout)
+    monkeypatch.setattr(asyncio, "wait_for", timed_out)
+    provider = ProviderConfig(
+        id="synthetic",
+        name="Synthetic",
+        base_url="http://127.0.0.1:1/v1",
+        wire_api="chat",
+        auth_type="none",
+    )
+    runtime = AdapterRuntime(provider)
+    with pytest.raises(runtime_module._RequestError) as failure:
+        asyncio.run(runtime._request(Reader()))
+    assert failure.value.status == 400
 
 
 def test_credentials_and_transport_controls_fail_without_leaking_or_starting_a_listener(

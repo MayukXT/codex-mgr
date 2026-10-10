@@ -314,7 +314,16 @@ def _adapt_request(request, protocol, *, max_output_tokens=None, thinking_budget
         )
     if request.get("access_programs") or request.get("service_tier") not in {None, "auto"}:
         raise ProtocolError("This service selection has no verified adapter mapping.")
-    if request.get("include") or request.get("stream_options"):
+    includes = request.get("include")
+    # Codex requests this delivery preference even with reasoning disabled.
+    # It does not require a reasoning item when the upstream returns none;
+    # opaque history and unsupported upstream reasoning still reject explicitly.
+    if includes is not None and (
+        not isinstance(includes, list)
+        or any(value != "reasoning.encrypted_content" for value in includes)
+    ):
+        raise ProtocolError("This response delivery option needs a verified adapter mapping.")
+    if request.get("stream_options"):
         raise ProtocolError("This response delivery option needs a verified adapter mapping.")
     model = text(request.get("model"), "Supply an exact model ID.", nonempty=True)
     stream = request.get("stream", False)
