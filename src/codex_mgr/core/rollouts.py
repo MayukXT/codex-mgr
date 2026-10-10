@@ -12,7 +12,9 @@ from uuid import UUID
 import zstandard
 
 _UUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
-_FILENAME = re.compile(rf"^rollout-.+-(?P<id>{_UUID})\.jsonl(?:\.zst)?$")
+_FILENAME = re.compile(
+    rf"^rollout-.+-(?P<id>{_UUID})(?:_(?P<rollout_id>{_UUID}))?\.jsonl(?:\.zst)?$"
+)
 _HEADER_BYTES = 1_048_576
 _COMPRESSED_PREFIX_BYTES = 4_194_304
 _WINDOW_BYTES = 67_108_864  # The backend passes bytes to ZSTD_DCtx_setMaxWindowSize.
@@ -44,6 +46,7 @@ class SessionMetadata:
     from_filename: bool = False
     canonical_history: bool = False
     compressed: bool = False
+    rollout_id: str | None = None
 
 
 def metadata_from_record(record: object, path: Path) -> SessionMetadata:
@@ -57,6 +60,8 @@ def metadata_from_record(record: object, path: Path) -> SessionMetadata:
         raise SessionIdentityError("Session metadata has an unsupported history mode.")
     match = _FILENAME.fullmatch(path.name)
     filename_id = canonical_session_id(match["id"]) if match else None
+    if match and match["rollout_id"] and mode != "paginated":
+        raise SessionIdentityError("Replacement rollout names require paginated history.")
     raw_id = payload.get("id")
     if raw_id is None:
         if filename_id is None:
@@ -79,6 +84,7 @@ def metadata_from_record(record: object, path: Path) -> SessionMetadata:
         raw_id is None,
         mode == "paginated" or payload.get("history_base") is not None,
         path.name.endswith(".jsonl.zst"),
+        canonical_session_id(match["rollout_id"] or match["id"]) if match else session_id,
     )
 
 

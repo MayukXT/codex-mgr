@@ -12,6 +12,7 @@ from codex_mgr.core.rollouts import (
     canonical_session_id,
     read_session_metadata,
 )
+from codex_mgr.core.rpc import CodexReader, CodexRpcError
 from codex_mgr.utils.paths import get_codex_home, get_session_index_path, get_sessions_dir
 
 
@@ -33,12 +34,41 @@ class SessionItem:
 
     def require_rollout(self) -> Path:
         if self.duplicate_paths:
-            raise AmbiguousSessionError(
-                "Multiple rollout files have this UUID. Resolve the duplicate before resuming or restoring."
-            )
+            return _native_selected_rollout(self.id, self.duplicate_paths)
         if self.rollout_path is None:
             raise FileNotFoundError("The indexed session has no readable rollout file.")
         return self.rollout_path
+
+
+def _native_selected_rollout(session_id: str, candidates: tuple[Path, ...]) -> Path:
+    """Resolve canonical replacements through native state, never timestamps."""
+    try:
+        if not all(read_session_metadata(path).canonical_history for path in candidates):
+            raise ValueError
+        with CodexReader() as reader:
+            result = reader.request("thread/read", {"threadId": session_id, "includeTurns": False})
+        thread = result.get("thread")
+        if not isinstance(thread, dict) or thread.get("id") != session_id:
+            raise ValueError
+        raw_path = thread.get("path")
+        if not isinstance(raw_path, str) or not raw_path or not Path(raw_path).is_absolute():
+            raise ValueError
+        selected = Path(raw_path).resolve()
+        if not selected.exists() and selected.name.endswith(".jsonl"):
+            selected = selected.with_suffix(".jsonl.zst").resolve()
+        if selected not in {path.resolve() for path in candidates}:
+            raise ValueError
+        roots = (get_sessions_dir().resolve(), (get_codex_home() / "archived_sessions").resolve())
+        if not any(selected.is_relative_to(root) for root in roots):
+            raise ValueError
+        metadata = read_session_metadata(selected)
+        if metadata.id != session_id or not metadata.canonical_history:
+            raise ValueError
+        return selected
+    except (OSError, ValueError, CodexRpcError) as exc:
+        raise AmbiguousSessionError(
+            "Multiple rollout files have this UUID. Codex could not verify its selected canonical rollout; resolve the duplicate before resuming or restoring."
+        ) from exc
 
 
 @dataclass

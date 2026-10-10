@@ -44,7 +44,7 @@ cmgr sessions --limit 20 --offset 20 --json
 
 The local catalog reads session titles from `session_index.jsonl` and complete UUIDs from plain or compressed rollout metadata. It also discovers unindexed JSONL and `.jsonl.zst` rollouts. Compressed headers are read within fixed limits without decompressing files onto disk. Archived files are included when requested. Workspace filters match the original working directory exactly.
 
-There is no fixed history cutoff. Missing files and duplicate UUID files are identified in the listing. Resolve duplicate files before resuming or restoring; a title or prefix that matches several sessions requires a complete UUID. Hosted sessions are outside this offline catalog. Header discovery establishes identity, not integrity of the entire history.
+There is no fixed history cutoff. Missing files and duplicate UUID files are identified in the listing. For paginated histories with retained replacement rollouts, selecting a session asks Codex to verify its current rollout. If that check fails, the manager refuses to choose by timestamp. Legacy duplicate files require manual resolution; a title or prefix that matches several sessions requires a complete UUID. Hosted sessions are outside this offline catalog. Header discovery establishes identity, not integrity of the entire history.
 
 These commands print local session metadata. JSON output includes titles, UUIDs, timestamps and absolute working-directory paths. Use filters or page bounds for a narrower result and review the output before sharing it.
 

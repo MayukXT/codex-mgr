@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import tomlkit
@@ -20,8 +22,11 @@ from codex_mgr.core.backup import (
 )
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
+from codex_mgr.core.rollouts import read_session_metadata
+from codex_mgr.core.rpc import CodexReader
 from codex_mgr.core.sessions import find_session_by_id_or_title
 from codex_mgr.utils.files import create_snapshot
+from codex_mgr.utils.json_edits import JsonEdits
 from codex_mgr.utils.paths import find_codex_binary, get_backups_dir, get_codex_home
 from codex_mgr.utils.processes import OwnedBackgroundProcess
 
@@ -79,6 +84,67 @@ def test_native_canonical_history_rejects_file_only_mutations(tmp_path, monkeypa
             pytest.fail("Canonical native history cannot be converted by replacing its file.")
         assert rollout.read_bytes() == original and list_session_backups(identity) == [snapshot]
         assert not received
+
+
+def test_native_revert_keeps_thread_identity_when_rollout_identity_changes(tmp_path, monkeypatch):
+    class SyntheticWriter(CodexReader):
+        ALLOWED = CodexReader.ALLOWED | {"thread/resume", "thread/revert"}
+
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream() as (provider, _, _), AdapterRuntime(provider) as runtime:
+        identity = launch(tmp_path, runtime)[0]["thread_id"]
+        launch(tmp_path, runtime, session=identity)
+        source = find_session_by_id_or_title(identity).require_rollout()
+        records = [json.loads(raw) for raw in source.read_bytes().splitlines()]
+        turn_id = next(
+            record["payload"]["turn_id"]
+            for record in reversed(records)
+            if record["type"] == "turn_context"
+        )
+        environment = os.environ.copy()
+        environment["CMGR_NATIVE_FIXTURE_KEY"] = runtime.token
+        with SyntheticWriter(environment=environment) as writer:
+            writer.request("thread/resume", {"threadId": identity})
+            reverted = writer.request(
+                "thread/revert", {"threadId": identity, "beforeTurnId": turn_id}
+            )["thread"]
+        replacement = Path(reverted["path"])
+        assert reverted["id"] == identity and replacement != source
+        metadata = read_session_metadata(replacement)
+        assert metadata.id == identity and metadata.canonical_history
+        assert metadata.rollout_id != identity
+        assert source.exists()
+        assert find_session_by_id_or_title(identity).require_rollout() == replacement
+        assert launch(tmp_path, runtime, session=identity)[-1]["type"] == "turn.completed"
+
+
+def test_native_independent_materialized_history_preserves_source_and_resumes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream() as (provider, received, _), AdapterRuntime(provider) as runtime:
+        identity = launch(tmp_path, runtime)[0]["thread_id"]
+        source = find_session_by_id_or_title(identity).require_rollout()
+        original = source.read_bytes()
+        raw_meta, suffix = original.split(b"\n", 1)
+        editor = JsonEdits(raw_meta.decode())
+        imported_id = str(uuid4())
+        editor.set(("payload", "id"), imported_id)
+        editor.set(("payload", "history_mode"), "legacy")
+        editor.set(("payload", "history_base"), None)
+        editor.set(("payload", "forked_from_id"), identity)
+        imported = source.with_name(source.name.replace(identity, imported_id))
+        imported.write_bytes(editor.render().encode() + b"\n" + suffix)
+        resumed = launch(tmp_path, runtime, session=imported_id)
+        assert resumed[0]["thread_id"] == imported_id
+        assert source.read_bytes() == original
+        assert imported.read_bytes().startswith(editor.render().encode() + b"\n" + suffix)
+        assert len(received) == 2
+        assert any(
+            message["role"] == "assistant"
+            and message["content"] == [{"type": "text", "text": "  Exact 🌙\n"}]
+            for message in received[-1][2]["messages"]
+        )
 
 
 _NATIVE_RUNNER = """

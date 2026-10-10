@@ -7,7 +7,9 @@ from uuid import UUID
 
 import pytest
 
+from codex_mgr.core import sessions as sessions_module
 from codex_mgr.core.rollouts import SessionIdentityError, read_session_metadata
+from codex_mgr.core.rpc import CodexRpcError
 from codex_mgr.core.sessions import (
     AmbiguousSessionError,
     discover_sessions,
@@ -59,6 +61,109 @@ def test_identity_conflict_is_not_indexed_as_a_different_session():
     catalog = discover_sessions()
     assert not catalog.sessions
     assert catalog.skipped_rollouts == 1
+
+
+def replacement(number, revision):
+    return rollout(
+        number,
+        name=f"rollout-2026-10-10T12-00-00-{sid(number)}_{sid(revision)}.jsonl",
+        metadata={"history_mode": "paginated"},
+    )
+
+
+def test_replacement_filename_keeps_thread_and_immutable_rollout_identities_separate():
+    path = replacement(1, 2)
+    metadata = read_session_metadata(path)
+    assert metadata.id == sid(1) and metadata.rollout_id == sid(2)
+    assert metadata.canonical_history and not metadata.from_filename
+    path.write_bytes(path.read_bytes().replace(sid(1).encode(), sid(3).encode()))
+    with pytest.raises(SessionIdentityError, match="different"):
+        read_session_metadata(path)
+
+
+def test_replacement_filename_cannot_authorize_a_legacy_file():
+    path = rollout(1, name=f"rollout-2026-10-10T12-00-00-{sid(1)}_{sid(2)}.jsonl")
+    with pytest.raises(SessionIdentityError, match="paginated"):
+        read_session_metadata(path)
+
+
+def canonical_candidates():
+    original = rollout(1, metadata={"history_mode": "paginated"})
+    selected = replacement(1, 2)
+    item = find_session_by_id_or_title(sid(1))
+    assert set(item.duplicate_paths) == {original, selected}
+    return item, original, selected
+
+
+def native_selection(monkeypatch, result):
+    class Reader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def request(self, method, params):
+            assert method == "thread/read"
+            assert params == {"threadId": sid(1), "includeTurns": False}
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    monkeypatch.setattr(sessions_module, "CodexReader", Reader)
+
+
+def test_native_canonical_selection_wins_over_file_timestamps(monkeypatch):
+    item, original, selected = canonical_candidates()
+    os.utime(original, (2_000_000_000, 2_000_000_000))
+    native_selection(monkeypatch, {"thread": {"id": sid(1), "path": str(selected)}})
+    before = {path: path.read_bytes() for path in (original, selected)}
+    assert item.require_rollout() == selected
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize(
+    "fault", ["identity", "unlisted", "outside", "relative", "missing", "unavailable"]
+)
+def test_unverified_canonical_selection_never_guesses(fault, tmp_path, monkeypatch):
+    item, original, selected = canonical_candidates()
+    thread = {"id": sid(1), "path": str(selected)}
+    result = {"thread": thread}
+    if fault == "identity":
+        thread["id"] = sid(3)
+    elif fault == "unlisted":
+        other = rollout(1, folder=tmp_path)
+        thread["path"] = str(other)
+    elif fault == "outside":
+        other = rollout(1, folder=tmp_path, metadata={"history_mode": "paginated"})
+        item.duplicate_paths = (*item.duplicate_paths, other)
+        thread["path"] = str(other)
+    elif fault == "relative":
+        thread["path"] = selected.name
+    elif fault == "missing":
+        selected.unlink()
+    else:
+        result = CodexRpcError("synthetic-private-rpc-response")
+    native_selection(monkeypatch, result)
+    before = original.read_bytes()
+    with pytest.raises(AmbiguousSessionError, match="could not verify") as caught:
+        item.require_rollout()
+    assert "synthetic-private" not in str(caught.value)
+    assert original.read_bytes() == before
+
+
+def test_native_logical_path_can_select_an_existing_compressed_representation(monkeypatch):
+    import zstandard
+
+    item, original, selected = canonical_candidates()
+    compressed = selected.with_suffix(".jsonl.zst")
+    raw = zstandard.ZstdCompressor(write_checksum=True).compress(selected.read_bytes())
+    compressed.write_bytes(raw)
+    selected.unlink()
+    item.duplicate_paths = (original, compressed)
+    native_selection(monkeypatch, {"thread": {"id": sid(1), "path": str(selected)}})
+    assert item.require_rollout() == compressed
+    assert compressed.read_bytes() == raw and not selected.exists()
 
 
 @pytest.mark.parametrize("mode", [None, "future-mode", 1, False, {}, []])
