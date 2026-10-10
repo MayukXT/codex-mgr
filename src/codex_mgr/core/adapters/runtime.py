@@ -161,11 +161,11 @@ class AdapterRuntime:
         return self._base_url
 
     def reasoning_compatible(self, item):
-        """Check a signed continuation without starting HTTP or modifying storage."""
+        """Authenticate offline for this route/model; actual replay also checks its prefix."""
         if self._continuations is None or not isinstance(item, dict):
             return False
         try:
-            self._continuations.open(item.get("encrypted_content"), self._model)
+            self._continuations.inspect(item.get("encrypted_content"), self._model)
             return True
         except ProtocolError:
             return False

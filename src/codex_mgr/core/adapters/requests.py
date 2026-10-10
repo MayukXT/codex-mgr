@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from codex_mgr.core.adapters.continuations import ContinuationCodec
+from codex_mgr.core.adapters.continuations import ContinuationCodec, MessagesPrefix
 from codex_mgr.core.adapters.tools import (
     ProtocolError,
     ToolRegistry,
@@ -116,27 +116,31 @@ def _content(value, protocol, *, images=True):
     return result
 
 
-def _append(messages, role, content, *, protocol):
+def _append(messages, role, content, *, protocol, prefix=None):
     if protocol == "messages" and messages and messages[-1]["role"] == role:
         messages[-1]["content"].extend(content)
     else:
         messages.append({"role": role, "content": content})
+    if prefix is not None:
+        prefix.append(role, content)
 
 
-def _history(items, protocol, registry, continuations, model):
-    messages, system, pending, seen_calls = [], [], {}, set()
+def _history(items, protocol, registry, continuations, model, prefix=None):
+    messages, pending, seen_calls = [], {}, set()
     for item in items:
         if not isinstance(item, dict):
             raise ProtocolError("Invalid Responses history item.")
         kind = item.get("type", "message")
         if kind == "reasoning":
-            if pending:
+            if pending and item.get("encrypted_content") is None:
                 raise ProtocolError("Tool calls need matching results before reasoning history.")
             if item.get("encrypted_content") is not None:
                 if protocol != "messages" or continuations is None:
                     raise ProtocolError("Reasoning history needs a compatible bound continuation.")
-                block = continuations.open(item["encrypted_content"], model)
-                _append(messages, "assistant", [block], protocol=protocol)
+                block = continuations.open(
+                    item["encrypted_content"], model, prefix=prefix.digest if prefix else None
+                )
+                _append(messages, "assistant", [block], protocol=protocol, prefix=prefix)
             else:
                 summary = item.get("summary")
                 if (
@@ -155,18 +159,16 @@ def _history(items, protocol, registry, continuations, model):
                         raise ProtocolError("Invalid readable reasoning summary.")
                     content.append({"type": "text", "text": text(part["text"])})
                 if content:
-                    _append(messages, "assistant", content, protocol=protocol)
+                    _append(messages, "assistant", content, protocol=protocol, prefix=prefix)
         elif kind == "message":
             role = item.get("role")
             if role not in {"system", "developer", "user", "assistant"}:
                 raise ProtocolError("Invalid Responses message role.")
-            if pending:
+            if pending and role != "assistant":
                 raise ProtocolError("Tool calls need matching results before the next message.")
             content = _content(item.get("content"), protocol, images=role == "user")
-            if protocol == "messages" and role in {"system", "developer"}:
-                system.extend(content)
-            else:
-                _append(messages, role, content, protocol=protocol)
+            if protocol != "messages" or role not in {"system", "developer"}:
+                _append(messages, role, content, protocol=protocol, prefix=prefix)
         elif kind in {"function_call", "custom_tool_call"}:
             if item.get("status") not in {None, "completed"}:
                 raise ProtocolError("Tool history contains an unfinished call.")
@@ -197,6 +199,7 @@ def _history(items, protocol, registry, continuations, model):
                         }
                     ],
                     protocol=protocol,
+                    prefix=prefix,
                 )
             else:
                 if not messages or messages[-1]["role"] != "assistant":
@@ -224,14 +227,14 @@ def _history(items, protocol, registry, continuations, model):
             content = _content(item.get("output"), protocol, images=protocol == "messages")
             if protocol == "messages":
                 result = {"type": "tool_result", "tool_use_id": call_id, "content": content}
-                _append(messages, "user", [result], protocol=protocol)
+                _append(messages, "user", [result], protocol=protocol, prefix=prefix)
             else:
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
         else:
             raise ProtocolError("This history item has no verified adapter mapping.")
     if pending:
         raise ProtocolError("Tool history ends before its matching results.")
-    return messages, system
+    return messages
 
 
 def _choice(request, protocol, registry):
@@ -386,21 +389,27 @@ def _adapt_request(
         raise ProtocolError(
             "Supply Responses input; the adapter does not invent an initial message."
         )
-    messages, system = _history(items, protocol, registry, continuations, model)
+    payload = {"model": model, "messages": [], "stream": stream}
     instructions = request.get("instructions")
+    system = []
     if instructions is not None:
         block = {"type": "text", "text": text(instructions)}
         if protocol == "messages":
             system.insert(0, block)
         else:
-            messages.insert(0, {"role": "system", "content": [block]})
-    if not any(message["role"] in {"user", "assistant", "tool"} for message in messages):
-        raise ProtocolError("Supply conversation input in addition to system instructions.")
-    payload = {"model": model, "messages": messages, "stream": stream}
+            payload["messages"].append({"role": "system", "content": [block]})
     if protocol == "chat" and stream:
         payload["stream_options"] = {"include_usage": True}
-    if system:
-        payload["system"] = system
+    if protocol == "messages":
+        for item in items:
+            if (
+                isinstance(item, dict)
+                and item.get("type", "message") == "message"
+                and item.get("role") in {"system", "developer"}
+            ):
+                system.extend(_content(item.get("content"), protocol, images=False))
+        if system:
+            payload["system"] = system
     if registry.definitions:
         if protocol == "chat":
             payload["tools"] = [
@@ -421,6 +430,10 @@ def _adapt_request(
             payload["parallel_tool_calls"] = parallel
     elif request.get("tool_choice", "auto") not in {"auto", "none"}:
         raise ProtocolError("Tool choice requires declared tools.")
+    prefix = MessagesPrefix(payload) if protocol == "messages" else None
+    payload["messages"].extend(_history(items, protocol, registry, continuations, model, prefix))
+    if not any(message["role"] in {"user", "assistant", "tool"} for message in payload["messages"]):
+        raise ProtocolError("Supply conversation input in addition to system instructions.")
     _controls(request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary)
     if len(encoded_json(payload).encode()) > _MAX_REQUEST_BYTES:
         raise ProtocolError("Translated request exceeds the size limit.")

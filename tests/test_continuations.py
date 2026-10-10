@@ -142,8 +142,14 @@ def test_buffered_thinking_reconstructs_exact_provider_history(block_value):
     response = adapt_response(body, original)
     assert response["output"][0]["type"] == "reasoning"
     assert response["output"][0]["summary"] == []
-    replay = adapted(input=[*response["output"], {"role": "user", "content": "Continue."}])
-    assert replay.payload["messages"][0]["content"][0] == block_value
+    replay = adapted(
+        input=[
+            {"role": "user", "content": request()["input"]},
+            *response["output"],
+            {"role": "user", "content": "Continue."},
+        ]
+    )
+    assert replay.payload["messages"][1]["content"][0] == block_value
     assert replay.payload["messages"][-1]["content"] == [{"type": "text", "text": "Continue."}]
     events = list(buffered_stream(body, original))
     assert_lifecycle(events)
@@ -199,8 +205,14 @@ def test_supplied_summary_is_opt_in_exact_and_does_not_alter_replay(summary, val
         else []
     )
     assert item["summary"] == expected
-    replay = summarized(input=[*response["output"], {"role": "user", "content": "Continue."}])
-    assert replay.payload["messages"][0]["content"][0] == value
+    replay = summarized(
+        input=[
+            {"role": "user", "content": request()["input"]},
+            *response["output"],
+            {"role": "user", "content": "Continue."},
+        ]
+    )
+    assert replay.payload["messages"][1]["content"][0] == value
     assert value.get("signature", value.get("data")) not in str(expected)
 
 
@@ -246,8 +258,10 @@ def test_validated_stream_summary_events_keep_exact_text_and_item_identity(summa
     assert_summary_lifecycle(events, SIGNED["thinking"] if summary == "auto" else None)
     assert SIGNED["signature"] not in str(events) and REDACTED["data"] not in str(events)
     output = events[-1]["response"]["output"]
-    assert selected.continuations.open(output[0]["encrypted_content"], selected.model) == SIGNED
-    assert selected.continuations.open(output[1]["encrypted_content"], selected.model) == REDACTED
+    assert selected.continuations.inspect(output[0]["encrypted_content"], selected.model) == SIGNED
+    assert (
+        selected.continuations.inspect(output[1]["encrypted_content"], selected.model) == REDACTED
+    )
 
 
 @pytest.mark.parametrize(
@@ -355,8 +369,14 @@ def test_streamed_signed_and_redacted_blocks_preserve_order_and_exact_history(ch
     assert events[-1]["type"] == "response.completed"
     output = events[-1]["response"]["output"]
     assert [item["type"] for item in output] == ["reasoning", "reasoning", "message"]
-    replay = adapted(input=[*output, {"role": "user", "content": "Continue."}])
-    assert replay.payload["messages"][0]["content"][:2] == [SIGNED, REDACTED]
+    replay = adapted(
+        input=[
+            {"role": "user", "content": request()["input"]},
+            *output,
+            {"role": "user", "content": "Continue."},
+        ]
+    )
+    assert replay.payload["messages"][1]["content"][:2] == [SIGNED, REDACTED]
     assert SIGNED["thinking"] not in str(events) and SIGNED["signature"] not in str(events)
 
 
@@ -367,7 +387,7 @@ def test_empty_transformation_reports_preserve_buffered_and_streamed_continuatio
     body["input_transformations"] = report
     response = adapt_response(body, original)
     assert (
-        original.continuations.open(response["output"][0]["encrypted_content"], original.model)
+        original.continuations.inspect(response["output"][0]["encrypted_content"], original.model)
         == SIGNED
     )
     source = thinking_stream()
@@ -377,9 +397,13 @@ def test_empty_transformation_reports_preserve_buffered_and_streamed_continuatio
     assert_lifecycle(events)
     assert events[-1]["type"] == "response.completed"
     output = events[-1]["response"]["output"]
-    assert adapted(input=[*output, {"role": "user", "content": "Continue."}]).payload["messages"][
-        0
-    ]["content"][:2] == [SIGNED, REDACTED]
+    assert adapted(
+        input=[
+            {"role": "user", "content": request()["input"]},
+            *output,
+            {"role": "user", "content": "Continue."},
+        ]
+    ).payload["messages"][1]["content"][:2] == [SIGNED, REDACTED]
 
 
 _TRANSFORMATIONS = [

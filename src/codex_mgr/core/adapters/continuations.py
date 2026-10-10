@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -23,7 +24,58 @@ from codex_mgr.utils.paths import get_codex_home
 _MAX_CLEAR = 2 * 1024 * 1024
 _MAX_ENVELOPE = 3 * 1024 * 1024
 _DOMAIN = b"cmgr/messages-thinking/v1\0"
+_PREFIX_DOMAIN = b"cmgr/messages-prefix/v1\0"
 _FAILURE = "Reasoning continuation is invalid or belongs to another connection."
+_PREFIX_FAILURE = "Reasoning history no longer matches its saved conversation prefix."
+
+
+def _canonical(value):
+    try:
+        return json.dumps(
+            value, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise ProtocolError("Invalid conversation prefix.") from exc
+
+
+class MessagesPrefix:
+    """Incremental commitment to normalized Messages history; retain no content."""
+
+    def __init__(self, payload):
+        if not isinstance(payload, dict):
+            raise ProtocolError("Invalid conversation prefix.")
+        system, tools, messages = (payload.get(key, []) for key in ("system", "tools", "messages"))
+        if any(not isinstance(value, list) for value in (system, tools, messages)):
+            raise ProtocolError("Invalid conversation prefix.")
+        self._digest = hashlib.sha256(_PREFIX_DOMAIN + _canonical([system, tools])).digest()
+        self._role = None
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ProtocolError("Invalid conversation prefix.")
+            self.append(message.get("role"), message.get("content"))
+
+    @property
+    def digest(self):
+        return self._digest
+
+    def append(self, role, content):
+        if (
+            not isinstance(role, str)
+            or role not in {"user", "assistant"}
+            or not isinstance(content, list)
+        ):
+            raise ProtocolError("Invalid conversation prefix.")
+        if role != self._role:
+            self._digest = hashlib.sha256(
+                _PREFIX_DOMAIN + self._digest + b"role\0" + _canonical(role)
+            ).digest()
+            self._role = role
+        for block in content:
+            if not isinstance(block, dict):
+                raise ProtocolError("Invalid conversation prefix.")
+            self._digest = hashlib.sha256(
+                _PREFIX_DOMAIN + self._digest + b"block\0" + _canonical(block)
+            ).digest()
 
 
 def thinking_block(value):
@@ -151,34 +203,50 @@ class ContinuationCodec:
             self.scope + encoded_json(text(model, nonempty=True)).encode()
         ).digest()
 
-    def seal(self, block, model):
-        clear = encoded_json(thinking_block(block)).encode("utf-8")
+    def seal(self, block, model, *, prefix=None):
+        block = thinking_block(block)
+        if prefix is not None and (not isinstance(prefix, bytes) or len(prefix) != 32):
+            raise ProtocolError("Invalid continuation prefix binding.")
+        version = "cmgr1" if prefix is None else "cmgr2"
+        value = block if prefix is None else {"block": block, "prefix": prefix.hex()}
+        clear = encoded_json(value).encode("utf-8")
         if len(clear) > _MAX_CLEAR:
             raise ProtocolError("Reasoning continuation exceeds the size limit.")
         binding = self._binding(model)
         nonce = secrets.token_bytes(12)
-        cipher = AESGCM(self.key_loader(True)).encrypt(nonce, clear, _DOMAIN + binding)
+        domain = _DOMAIN if version == "cmgr1" else b"cmgr/messages-thinking/v2\0"
+        cipher = AESGCM(self.key_loader(True)).encrypt(nonce, clear, domain + binding)
         payload = base64.urlsafe_b64encode(nonce + cipher).decode("ascii").rstrip("=")
-        return "cmgr1." + binding.hex() + "." + payload
+        return version + "." + binding.hex() + "." + payload
 
-    def open(self, envelope, model):
+    def _decode(self, envelope, model):
         try:
             if not isinstance(envelope, str) or len(envelope) > _MAX_ENVELOPE:
                 raise ValueError
-            match = re.fullmatch(r"cmgr1\.([a-f0-9]{64})\.([A-Za-z0-9_-]+)", envelope)
+            match = re.fullmatch(r"(cmgr[12])\.([a-f0-9]{64})\.([A-Za-z0-9_-]+)", envelope)
             binding = self._binding(model)
-            if match is None or not hmac.compare_digest(match[1], binding.hex()):
+            if match is None or not hmac.compare_digest(match[2], binding.hex()):
                 raise ValueError
-            encoded = match[2]
+            encoded = match[3]
             raw = base64.b64decode(
                 encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
             )
             if len(raw) < 28 or base64.urlsafe_b64encode(raw).decode().rstrip("=") != encoded:
                 raise ValueError
-            clear = AESGCM(self.key_loader(False)).decrypt(raw[:12], raw[12:], _DOMAIN + binding)
+            domain = _DOMAIN if match[1] == "cmgr1" else b"cmgr/messages-thinking/v2\0"
+            clear = AESGCM(self.key_loader(False)).decrypt(raw[:12], raw[12:], domain + binding)
             if len(clear) > _MAX_CLEAR:
                 raise ValueError
-            return thinking_block(object_json(clear.decode("utf-8")))
+            value = object_json(clear.decode("utf-8"))
+            if match[1] == "cmgr1":
+                return thinking_block(value), None
+            if (
+                set(value) != {"block", "prefix"}
+                or not isinstance(value["prefix"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", value["prefix"])
+            ):
+                raise ValueError
+            return thinking_block(value["block"]), bytes.fromhex(value["prefix"])
         except (
             ProtocolError,
             ValueError,
@@ -188,3 +256,18 @@ class ContinuationCodec:
             InvalidTag,
         ) as exc:
             raise ProtocolError(_FAILURE) from exc
+
+    def inspect(self, envelope, model):
+        """Authenticate for offline inspection; this does not certify replay context."""
+        return self._decode(envelope, model)[0]
+
+    def open(self, envelope, model, *, prefix=None):
+        """Verify v2 against the actual prefix; legacy v1 retains its older binding."""
+        block, saved = self._decode(envelope, model)
+        if saved is not None and (
+            not isinstance(prefix, bytes)
+            or len(prefix) != 32
+            or not hmac.compare_digest(saved, prefix)
+        ):
+            raise ProtocolError(_PREFIX_FAILURE)
+        return block

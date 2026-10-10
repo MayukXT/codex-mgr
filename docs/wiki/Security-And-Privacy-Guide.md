@@ -14,4 +14,6 @@ Provider checks, model discovery, and update checks use the network. Running Cod
 
 Never share `auth.json`, private keys, `.env`, session rollouts, unsanitized settings, or backups. Ignore rules reduce accidental additions but do not remove data from Git history.
 
+Messages continuation keys and their checksums stay in the Codex home and are excluded from portable exports. Continuations conceal signed blocks and their conversation-prefix checks, but saved sessions can still contain readable messages and explicitly enabled summaries. Encryption does not make a session safe to publish. See [encrypted reasoning](Reasoning-Blobs-And-Fernet.md).
+
 Export preserves existing files unless `--overwrite` is explicitly supplied and refuses Codex runtime files or backup directories. Imports validate the bundle version and matching connection IDs. Merge keeps existing settings and adds distinct models; rename creates independent IDs; overwrite applies active settings through the guarded configuration service. A sanitized overwrite keeps existing credentials where the authentication methods are compatible.

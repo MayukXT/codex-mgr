@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 
+from codex_mgr.core.adapters.continuations import MessagesPrefix
 from codex_mgr.core.adapters.requests import AdaptedRequest
 from codex_mgr.core.adapters.tools import ProtocolError, encoded_json, text
 
@@ -156,6 +157,7 @@ def _messages_output(body, adapted):
         raise ProtocolError("Unsupported upstream stop reason.")
     incomplete = finish == "max_tokens"
     output, seen = [], set()
+    prefix = MessagesPrefix(adapted.payload)
     for block in body["content"]:
         if not isinstance(block, dict):
             raise ProtocolError("Invalid upstream Messages content.")
@@ -169,13 +171,15 @@ def _messages_output(body, adapted):
                     incomplete=incomplete,
                 )
             )
+            wire_block = {"type": "text", "text": content["text"]}
         elif block.get("type") in {"thinking", "redacted_thinking"}:
             if (
                 adapted.continuations is None
                 or adapted.payload.get("thinking", {}).get("type") != "enabled"
             ):
                 raise ProtocolError("Messages thinking needs an enabled, bound continuation.")
-            encrypted = adapted.continuations.seal(block, adapted.model)
+            encrypted = adapted.continuations.seal(block, adapted.model, prefix=prefix.digest)
+            wire_block = block
             summary = []
             if (
                 block["type"] == "thinking"
@@ -201,8 +205,15 @@ def _messages_output(body, adapted):
                 raise ProtocolError("Duplicate upstream tool call ID.")
             seen.add(item["call_id"])
             output.append(item)
+            wire_block = {
+                "type": "tool_use",
+                "id": item["call_id"],
+                "name": block["name"],
+                "input": block["input"],
+            }
         else:
             raise ProtocolError("This upstream block needs a verified response mapping.")
+        prefix.append("assistant", [wire_block])
     if not output or (finish == "tool_use" and not seen):
         raise ProtocolError("Upstream omitted its response content or tool calls.")
     return output, incomplete, "max_output_tokens"
