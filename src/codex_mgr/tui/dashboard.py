@@ -110,17 +110,18 @@ def _handle_diagnostics_tools() -> None:
     """Submenu for diagnostic checks, backups, updates, and portability."""
     while True:
         action = select_menu(
-            message="Diagnostics & Tools:",
+            message="Tools",
             choices=[
-                Choice(value="doctor", name="1. 🩺  Doctor & Diagnostics"),
-                Choice(value="revert", name="2. 🔄  Revert Session Snapshot"),
-                Choice(value="port", name="3. 📦  Export & Import Setup"),
-                Choice(value="update", name="4. ✨  Version & Updates"),
-                Choice(value=None, name="← Back (b)"),
+                Choice(value="doctor", name="1. Diagnostics"),
+                Choice(value="revert", name="2. Restore session"),
+                Choice(value="port", name="3. Export and import"),
+                Choice(value="update", name="4. Updates"),
+                Choice(value="recovery", name="5. Activation recovery"),
+                Choice(value=None, name="Back"),
             ],
             default="doctor",
             allow_back=True,
-            shortcuts={"1": "doctor", "2": "revert", "3": "port", "4": "update"},
+            shortcuts={"1": "doctor", "2": "revert", "3": "port", "4": "update", "5": "recovery"},
         )
 
         if not action:
@@ -135,6 +136,10 @@ def _handle_diagnostics_tools() -> None:
             run_portable_menu()
         elif action == "update":
             _handle_version_update()
+        elif action == "recovery":
+            from codex_mgr.tui.recovery_view import manage_activation_recovery
+
+            manage_activation_recovery()
 
 
 def _handle_switch_provider() -> None:

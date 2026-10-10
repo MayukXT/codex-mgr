@@ -1,4 +1,17 @@
-# Session recovery
+# Recovery
+
+## Configuration changes
+
+`cmgr recover` restores matching files from an interrupted activation or completes a native-validated change when both files match. An external edit stops automatic recovery. Review pending transaction IDs and file states with:
+
+```sh
+cmgr recover --list
+cmgr recover --accept-external TRANSACTION_ID
+```
+
+The explicit second command keeps the current configuration and manager files. It saves checksummed snapshots of both existing files before settling that one transaction. If a file changed after review or snapshot creation failed, the marker stays pending. Keeping files does not validate their configuration; reload settings and run diagnostics before activating a connection. The terminal menu exposes these choices under Tools > Activation recovery, with confirmation defaulting to No.
+
+Recovery reports transaction IDs and whether a file is original, requested, unchanged or externally edited. It does not print the file contents or credentials. Review snapshots before sharing them because configuration and manager snapshots may contain plaintext credentials.
 
 ## Find a session
 

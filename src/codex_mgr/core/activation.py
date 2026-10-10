@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from codex_mgr.config.schema import CmgrSettings
@@ -21,10 +22,31 @@ from codex_mgr.core.profiles import (
     prepare_configuration,
     snapshot_configuration,
 )
-from codex_mgr.utils.files import FileConflictError, atomic_write, mutation_lock, read_optional
+from codex_mgr.utils.files import (
+    FileConflictError,
+    atomic_write,
+    create_snapshot,
+    mutation_lock,
+    read_optional,
+)
 from codex_mgr.utils.paths import get_cmgr_settings_path, get_codex_home, get_config_toml_path
 
-_STATES = frozenset({"prepared", "config_applied", "validated", "committed", "rolled_back"})
+_TERMINAL = frozenset({"committed", "rolled_back", "accepted_external"})
+_STATES = _TERMINAL | {"prepared", "config_applied", "validated"}
+
+
+@dataclass(frozen=True)
+class PendingActivation:
+    id: str
+    state: str
+    config_status: str
+    settings_status: str
+    config_digest: str | None = field(repr=False)
+    settings_digest: str | None = field(repr=False)
+
+    @property
+    def expected(self):
+        return self.config_digest, self.settings_digest
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -64,7 +86,11 @@ def _read_record(path: Path) -> dict:
     if record["state"] not in _STATES:
         raise ValueError("Unknown activation recovery state.")
     for name in ("config", "settings"):
-        for prefix in ("before", "after"):
+        for prefix in (
+            ("before", "after", "accepted")
+            if record["state"] == "accepted_external"
+            else ("before", "after")
+        ):
             key = f"{prefix}_{name}"
             if key not in record or (
                 record[key] is not None
@@ -75,6 +101,105 @@ def _read_record(path: Path) -> dict:
             ):
                 raise ValueError("Invalid activation recovery digest.")
     return record
+
+
+def _originals(path: Path, record: dict) -> dict[str, bytes | None]:
+    originals = {}
+    for name in ("config", "settings"):
+        digest = record[f"before_{name}"]
+        data = (
+            _contained(path.parent / f"before-{name}.bin").read_bytes()
+            if digest is not None
+            else None
+        )
+        if _digest(data) != digest:
+            raise ValueError("Recovery snapshot integrity check failed.")
+        originals[name] = data
+    return originals
+
+
+def _status(digest, record, name):
+    before, after = record[f"before_{name}"], record[f"after_{name}"]
+    if digest == before == after:
+        return "unchanged"
+    if digest == before:
+        return "original"
+    if digest == after:
+        return "requested"
+    return "external"
+
+
+def list_pending_activations() -> list[PendingActivation]:
+    """Read only safe metadata; no directories, snapshots or credential output."""
+    folder = _contained(get_codex_home() / "backups" / "transactions")
+    result = []
+    for path in sorted(folder.glob("*/journal.json")):
+        record = _read_record(path)
+        if record["state"] in _TERMINAL:
+            continue
+        if not re.fullmatch(r"[a-f0-9]{32}", path.parent.name):
+            raise ValueError("Pending activation has an invalid transaction ID.")
+        _originals(path, record)
+        config, settings = (
+            _digest(read_optional(get_config_toml_path())),
+            _digest(read_optional(get_cmgr_settings_path())),
+        )
+        result.append(
+            PendingActivation(
+                path.parent.name,
+                record["state"],
+                _status(config, record, "config"),
+                _status(settings, record, "settings"),
+                config,
+                settings,
+            )
+        )
+    return result
+
+
+def accept_external_activation(
+    transaction_id: str, *, expected: tuple[str | None, str | None]
+) -> tuple[bool, str]:
+    """Explicitly keep reviewed current files, snapshot them and settle one journal."""
+    if not isinstance(transaction_id, str) or not re.fullmatch(r"[a-f0-9]{32}", transaction_id):
+        return False, "Choose an exact pending transaction ID from cmgr recover --list."
+    try:
+        path = _contained(
+            get_codex_home() / "backups" / "transactions" / transaction_id / "journal.json"
+        )
+        with mutation_lock(get_config_toml_path()), mutation_lock(get_cmgr_settings_path()):
+            record = _read_record(path)
+            if record["state"] in _TERMINAL:
+                return False, "This activation transaction is already settled."
+            _originals(path, record)
+            pairs = [
+                ("config", get_config_toml_path(), ".toml"),
+                ("settings", get_cmgr_settings_path(), ".json"),
+            ]
+            current = {name: read_optional(target) for name, target, _ in pairs}
+            digests = tuple(_digest(current[name]) for name, _, _ in pairs)
+            if digests != expected:
+                raise FileConflictError(
+                    "Files changed after review; inspect the transaction again."
+                )
+            for name, target, suffix in pairs:
+                if current[name] is not None:
+                    folder = _contained(get_codex_home() / "backups" / name)
+                    create_snapshot(target, folder, prefix="kept_", suffix=suffix)
+            if any(read_optional(target) != current[name] for name, target, _ in pairs):
+                raise FileConflictError("Files changed while snapshotting; they were preserved.")
+            record["state"] = "accepted_external"
+            record["accepted_config"], record["accepted_settings"] = digests
+            _journal(path, record)
+        return (
+            True,
+            "Current files kept and snapshotted. Transaction settled; reload settings before activation.",
+        )
+    except (OSError, ValueError, RuntimeError):
+        return (
+            False,
+            "Transaction was not settled. Check recovery integrity, file changes and backup storage.",
+        )
 
 
 def _restore(path: Path, original: bytes | None, expected: bytes | None) -> None:
@@ -91,7 +216,7 @@ def _recover_journals() -> None:
     for path in sorted(folder.glob("*/journal.json")):
         try:
             record = _read_record(path)
-            if record["state"] in ("committed", "rolled_back"):
+            if record["state"] in _TERMINAL:
                 continue
             pairs = [
                 ("config", get_config_toml_path()),
@@ -104,21 +229,13 @@ def _recover_journals() -> None:
                 record["state"] = "committed"
                 _journal(path, record)
                 continue
-            originals = {}
+            originals = _originals(path, record)
             for name, _ in pairs:
                 old_hash = record[f"before_{name}"]
-                original = (
-                    _contained(path.parent / f"before-{name}.bin").read_bytes()
-                    if old_hash is not None
-                    else None
-                )
-                if _digest(original) != old_hash:
-                    raise ValueError("Recovery snapshot integrity check failed.")
                 if _digest(current[name]) not in (old_hash, record[f"after_{name}"]):
                     raise FileConflictError(
                         "Recovery found an external edit; inspect the pending transaction before retrying."
                     )
-                originals[name] = original
             for name, target in pairs:
                 if current[name] != originals[name]:
                     _restore(target, originals[name], current[name])

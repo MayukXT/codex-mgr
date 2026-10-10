@@ -14,7 +14,12 @@ from codex_mgr import __version__
 from codex_mgr.config.portable import apply_import_bundle, export_bundle
 from codex_mgr.config.schema import ModelInfo
 from codex_mgr.config.settings import load_settings
-from codex_mgr.core.activation import activate_provider, recover_pending_activation
+from codex_mgr.core.activation import (
+    accept_external_activation,
+    activate_provider,
+    list_pending_activations,
+    recover_pending_activation,
+)
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
 from codex_mgr.core.providers import delete_provider
@@ -92,7 +97,18 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument(
         "--network", action="store_true", help="Also request the selected provider's model catalog"
     )
-    subparsers.add_parser("recover", help="Recover an interrupted configuration activation")
+    recovery = subparsers.add_parser(
+        "recover", help="Review or recover interrupted configuration changes"
+    )
+    recovery_options = recovery.add_mutually_exclusive_group()
+    recovery_options.add_argument(
+        "--list", action="store_true", help="Show pending transactions and file states"
+    )
+    recovery_options.add_argument(
+        "--accept-external",
+        metavar="TRANSACTION_ID",
+        help="Snapshot and keep current files, settling this transaction",
+    )
 
     # version & update
     subparsers.add_parser("version", help="Show installed version and check for updates")
@@ -283,7 +299,30 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
 
     elif args.command == "recover":
-        ok, msg = recover_pending_activation()
+        if args.list or args.accept_external:
+            try:
+                pending = list_pending_activations()
+            except (OSError, ValueError, RuntimeError):
+                print_error(
+                    "Recovery records are unreadable or invalid. Existing files were preserved."
+                )
+                return 1
+            if args.list:
+                for item in pending:
+                    console.print(
+                        f"{item.id}  {item.state}  config: {item.config_status}  settings: {item.settings_status}",
+                        markup=False,
+                    )
+                if not pending:
+                    console.print("No pending activation transactions.")
+                return 0
+            selected = next((item for item in pending if item.id == args.accept_external), None)
+            if selected is None:
+                print_error("Choose an exact pending transaction ID from cmgr recover --list.")
+                return 1
+            ok, msg = accept_external_activation(selected.id, expected=selected.expected)
+        else:
+            ok, msg = recover_pending_activation()
         (print_success if ok else print_error)(msg)
         return 0 if ok else 1
 

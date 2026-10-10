@@ -65,7 +65,9 @@ def _storage_results() -> list[DiagnosticResult]:
         count = 0
         for pattern in (
             "config/config_*.toml",
+            "config/kept_*.toml",
             "settings/cmgr_*.json",
+            "settings/kept_*.json",
             "sessions/*/*.rollout.jsonl",
         ):
             for path in folder.glob(pattern):
@@ -89,9 +91,10 @@ def _storage_results() -> list[DiagnosticResult]:
                 "validated",
                 "committed",
                 "rolled_back",
+                "accepted_external",
             }:
                 raise ValueError
-            pending += state not in {"committed", "rolled_back"}
+            pending += state not in {"committed", "rolled_back", "accepted_external"}
         results.append(
             DiagnosticResult(
                 "Activation recovery",

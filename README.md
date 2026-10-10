@@ -49,6 +49,7 @@ cmgr doctor                  # Read local diagnostics without changing files
 cmgr doctor --network        # Also check API catalog access; no inference request
 cmgr start --provider my-api # Apply the connection and start a new Codex session
 cmgr recover                 # Recover an interrupted configuration change
+cmgr recover --list          # Review pending changes and external conflicts
 cmgr resume SESSION_UUID --to my-api
 cmgr restore SESSION_UUID --list
 cmgr export --output setup.json --sanitize-keys
