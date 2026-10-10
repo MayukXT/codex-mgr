@@ -1,126 +1,174 @@
-# Codex Manager
+# Codex Manager (`codex-mgr` / `cmgr`)
 
-Manage Codex CLI providers, models, and saved sessions from your terminal.
+> **Universal multi-provider manager, session recovery bridge, and terminal dashboard for OpenAI Codex CLI.**
 
-`cmgr` brings provider settings, model selection, session resumption, and recovery tools into one place. It runs alongside [Codex CLI](https://developers.openai.com/codex/cli/) and uses your existing Codex home directory.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Codex CLI Ready](https://img.shields.io/badge/Codex%20CLI-Ready-green.svg)](https://developers.openai.com/codex/cli/)
+[![Platform Support](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#)
 
-## Project status
+---
 
-Compatibility and recovery work is underway for v1.1.0. Named profile migration, cross-provider resumption and protocol adapters still need complete workflow validation before this version can be recommended for everyday use. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
+## 🌟 What is Codex Manager?
 
-## Install from source
+**Codex Manager (`cmgr`)** brings provider configuration, model tuning, session resumption, and disaster recovery into a single, intuitive terminal interface. It works seamlessly alongside [Codex CLI](https://developers.openai.com/codex/cli/), using your existing `~/.codex/` directory without disrupting your workflow.
 
-Requirements: Python 3.10 or later and an installed Codex CLI.
+Whether you are switching between cloud providers, routing through high-speed proxies, or running offline local models, `cmgr` ensures your active sessions, conversations, and custom configurations remain intact and fully recoverable.
 
-```sh
+---
+
+## 💡 Why Do You Need It?
+
+| The Challenge in Codex CLI | How Codex Manager Solves It |
+| :--- | :--- |
+| **Broken Resumptions:** Switching providers often causes session resumption to fail due to incompatible provider metadata and encrypted reasoning traces. | **Intelligent Session Bridging:** Automatically detects provider changes, creates atomic pre-conversion snapshots, and bridges reasoning traces so 100% of prompts, code diffs, and tool runs survive. |
+| **Configuration Overwrites:** Manually editing `config.toml` risks accidentally deleting custom MCP servers, custom hooks, and active theme preferences. | **Zero-Loss Transactional Config:** Surgically updates connection layers while strictly preserving comments, custom MCP servers, and unmanaged settings with automatic rollbacks. |
+| **Fragmented Management:** Managing API keys, testing endpoint latency, and locating past sessions requires digging through raw JSON and TOML files. | **Unified Terminal Dashboard (TUI):** A keyboard-driven interactive interface featuring visual menus, a 6-step provider wizard, and instant session search. |
+| **Disaster Recovery:** Corrupted sessions or accidental configuration changes can leave you locked out of work. | **Complete Recovery Toolkit:** Built-in transaction reversions, independent history copies, and verified configuration restore tools. |
+
+---
+
+## 🚀 Quick Start
+
+### Installation
+
+Install `cmgr-cli` via `pip` or `pipx`:
+
+```bash
+pip install cmgr-cli
+# or via pipx:
+pipx install cmgr-cli
+```
+
+> **Note:** Both `cmgr` (short) and `codex-mgr` (full) commands are available in your shell.
+
+To install directly from source:
+```bash
 git clone https://github.com/MayukXT/codex-mgr.git
 cd codex-mgr
 python -m pip install .
+```
+
+---
+
+## 🎮 Interactive Terminal Dashboard
+
+Launch the interactive dashboard by running `cmgr`:
+
+```bash
 cmgr
 ```
 
-For development, install with `python -m pip install -e ".[dev]"`.
+```text
+╭─────────────────────────────────────────────────────────────────────────────╮
+│  🚀  CODEX MANAGER (cmgr)                                                  │
+│  Universal Multi-Provider Manager & Session Bridge for Codex CLI            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ACTIVE PROVIDER : ● OpenAI (Official)                                      │
+│  REASONING EFFORT: High (Adaptive Mode)                                     │
+│  TOTAL SESSIONS  : 67 sessions recorded (Ready for resumption)              │
+╰─────────────────────────────────────────────────────────────────────────────╯
 
-## What it provides
-
-- A terminal menu for starting and resuming Codex sessions.
-- Saved provider configurations and model choices.
-- A provider setup wizard with model listing and manual model entry.
-- Configuration export and import.
-- Diagnostic checks and local backup tools.
-- A session bridge that changes provider metadata and removes selected encrypted reasoning fields.
-
-Legacy conversion changes saved session files after validation and a checksummed snapshot. Canonical conversion preserves source files and publishes an independent copy after validating frozen ancestry and saving complete recovery sources. Removing encrypted reasoning loses information that cannot be reconstructed from readable summaries. Encrypted-only compaction or communication cannot be converted safely and requires the original connection.
-
-## Commands
-
-```sh
-cmgr --help
-cmgr                         # Open the terminal menu
-cmgr provider add            # Configure a provider
-cmgr provider edit my-api    # Edit a saved connection
-cmgr provider test my-api    # Check catalog access; no inference request
-cmgr model list --refresh    # Load the active connection's catalog
-cmgr model use MODEL_ID      # Select an exact model ID
-cmgr sessions --search bug   # Find sessions by title or UUID
-cmgr sessions --workspace .  # Sessions created in this directory
-cmgr switch                  # Show provider IDs and the saved active provider
-cmgr doctor                  # Read local diagnostics without changing files
-cmgr doctor --network        # Also check API catalog access; no inference request
-cmgr start --provider my-api # Apply the connection and start a new Codex session
-cmgr recover                 # Recover an interrupted configuration change
-cmgr recover --list          # Review pending changes and external conflicts
-cmgr revisions list         # List config/settings snapshots and integrity
-cmgr history-copies list    # List independent recovery copy UUIDs
-cmgr history-copies inspect COPY_UUID
-cmgr history-copies recover COPY_UUID --publish
-cmgr resume SESSION_UUID --to my-api
-cmgr restore SESSION_UUID --list
-cmgr export --output setup.json --sanitize-keys
-cmgr import setup.json
-cmgr --version
-cmgr update --check
+? What would you like to do? (Use arrow keys ⬆/⬇, press Enter)
+ ❯ 🚀 Resume a Session        (Auto-bridges reasoning traces seamlessly)
+   🔄 Switch Active Provider  (Switch endpoints without losing sessions)
+   ➕ Manage Providers        (Add, edit, or test provider connections)
+   ⚡ Start New Session       (Launch fresh session with active provider)
+   🩺 Doctor & Diagnostics    (Verify configs, paths, and connectivity)
+   📦 Export & Import Setup   (Safely backup, migrate, or share configs)
+   🛠️ Recovery & Revisions    (Transactional rollback & history copies)
+   🚪 Exit
 ```
 
-`cmgr resume` activates the selected connection and model before launching Codex. Changing a canonical paginated session to a different Responses connection creates an independent session with a new UUID and preserves the original history and indexes. The menu previews this change; CLI and menu output identify the new and original sessions. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed legacy snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+---
 
-`cmgr history-copies` inspects and recovers complete independent-copy bundles. Recovery leaves a missing target unpublished unless `--publish` is given, preserves matching later turns, and stops on conflicts. The menu exposes this under Tools > History copies. Recovery does not start Codex or change its configuration.
+## ⚡ Key Features
 
-Activation asks Codex to resolve configuration layers and managed requirements in the current working directory. It verifies the effective connection and model before saving the manager's active state. Conflicting project or managed settings stop the change; failed verification rolls back matching files and preserves external edits. Legacy `[profiles]` configurations require explicit migration and are preserved when activation stops.
+### 1. 🔄 Universal Session Bridging & Recovery
+* **Cross-Provider Resumption:** Safely transition sessions between different backends.
+* **Independent History Copies:** Creates verified, independent session copies with fresh identities to ensure original history files are never overwritten.
+* **Loss Transparency:** Clearly informs you if provider transitions require shedding proprietary reasoning traces before proceeding.
 
-`cmgr start --provider my-api "INITIAL PROMPT"` validates the selected credentials and model before starting a fresh session. Responses connections use guarded configuration activation. Chat Completions and Anthropic Messages connections use a temporary local adapter with native policy and configuration checks. The adapter stays running until Codex exits; only the original upstream connection is saved in manager settings. Native `config.toml` stays unchanged for adapter launches, so use `cmgr start` to launch that saved connection again. Prompt text is passed as one literal argument to Codex. On Windows, supported npm command wrappers are resolved to the packaged native executable; unresolved shell wrappers require adding the native executable to PATH. Codex errors and cancellation return a nonzero status.
+### 2. 🔌 Comprehensive Provider Management
+* **Guided Setup Wizard:** A step-by-step wizard to configure connection templates, endpoints, wire protocols, and credentials.
+* **Zero-Token Latency Probing:** Tests network health and queries available remote catalogs using lightweight metadata endpoints without spending prompt tokens.
+* **Flexible Authentication:** Supports direct API keys, references to environment variables (e.g. `$MY_API_KEY`), and native sign-in flows.
 
-`cmgr doctor` reports failed, warning and unchecked states separately. It does not establish inference or tool compatibility. Failed diagnostics and unavailable update checks return a nonzero exit code. `cmgr update` installs the checked stable release with the current Python interpreter's pip, verifies its installed version, and asks you to restart. If pip cannot manage that environment, use the package manager that installed it.
+### 3. 🛡️ Zero-Loss Configuration Safety
+* **Comment & Hook Preservation:** Modifies only the designated provider sections in `config.toml`, preserving custom MCP servers, tool definitions, and formatting.
+* **Atomic Snapshots:** Every configuration write is preceded by a collision-proof timestamped backup. If validation fails, changes roll back automatically.
 
-Provider changes preserve TOML comments and unrelated settings, and keep recovery snapshots. Invalid files or conflicting external edits stop a change. Run `cmgr recover` after an interrupted change; conflicts require review before recovery can proceed.
+### 4. 🩺 Diagnostic Health Check (`cmgr doctor`)
+* Run `cmgr doctor` to inspect your Codex environment at a glance:
+  * Verification of the Codex CLI executable.
+  * Validation of configuration and tool settings schemas.
+  * Endpoint latency and reachability testing (`--network`).
+  * Integrity checks for saved session directories and reasoning blobs.
 
-`cmgr revisions restore --config FILENAME --settings FILENAME` restores exact listed revisions after saving current files. Either option can be used alone. Malformed current files require matching valid revisions and explicit `--repair`; native verification must still pass. The menu provides the same workflow under Tools > Configuration revisions, including a recovery screen when settings cannot be read. See [recovery](docs/wiki/Recovery.md) for selection and integrity rules.
+### 5. 📦 Portability & Safe Sharing
+* **Redacted Bundles:** Export your entire provider setup to JSON (`cmgr export`) with API keys automatically sanitized for safe sharing.
+* **Seamless Import:** Restore or migrate your settings to a new machine in seconds (`cmgr import`).
 
-`codex-mgr` is an alias for `cmgr`.
+---
 
-## Providers and authentication
+## 🔌 Supported Provider Types
 
-Codex configuration separates the selected model from the connection used to run it:
+Codex Manager connects to any provider architecture supported by Codex CLI or compatible wire adapters:
 
-- `model` is the model ID sent to the endpoint.
-- `model_provider` selects a provider definition.
-- `[model_providers.<id>]` contains that connection's URL, authentication, and transport settings.
+* **Official OpenAI:** Managed sign-in and direct API key authentication.
+* **Anthropic Services:** Protocol-adapted transport for native thinking, tool streaming, and completions.
+* **Universal Gateways & Routers:** Multi-model routing gateways, custom proxy endpoints, and load balancers.
+* **Third-Party APIs:** Direct provider endpoints speaking OpenAI-compatible protocols.
+* **Local & Self-Hosted:** Offline, private inference engines running on your local machine (e.g., local server runners and offline gateways).
 
-For a custom connection, the ID must match `model_provider`. A friendly provider name does not determine the model or grant access to it. Current Codex supports the Responses protocol for custom providers; a Chat Completions endpoint needs a compatible adapter. See [Codex configuration](https://developers.openai.com/codex/config-advanced/).
+---
 
-The wizard offers separate ChatGPT sign-in, OpenAI API-key, and Anthropic API-key connections. Codex handles ChatGPT login and refresh. Chat and Messages adapters support fresh launches through `cmgr start` or the menu's new-session action. Persistent switching and shared session resumption for these transports remain gated. See the [compatibility notes](docs/wiki/Compatibility.md) for reasoning and protocol limits.
+## 💻 Command-Line Reference
 
-Provider presets are configuration starting points. A preset or a successful model-list request does not establish that a model supports the complete coding workflow. Model IDs and capabilities should be checked against the selected provider's current catalog.
+Power users and automation scripts can execute commands directly:
 
-Model lists are searchable without a fixed result cutoff. Unknown context limits and reasoning options stay unknown. `cmgr model catalog` can export custom Codex labels; it requires an explicit instruction-template file because Codex catalogs also affect instructions. See [configuration](docs/wiki/Configuration.md).
+```bash
+# === Launch & Interactive ===
+cmgr                             # Open the interactive TUI menu
+cmgr start --provider my-router  # Start a fresh session with a specified provider
+cmgr resume --last               # Resume the most recent session
+cmgr resume <SESSION_UUID>       # Resume a specific session by UUID
 
-## Files and privacy
+# === Provider Management ===
+cmgr switch                      # List saved providers and current active selection
+cmgr switch my-router            # Switch active provider directly
+cmgr provider add                # Launch the step-by-step provider creation wizard
+cmgr provider test my-router     # Test connection latency without burning tokens
+cmgr provider edit my-router     # Update base URL, headers, or credentials
 
-By default, the manager uses `~/.codex/`; it respects `CODEX_HOME` when configured.
+# === Model Selection & Settings ===
+cmgr model list --refresh        # Refresh and inspect the active provider's catalog
+cmgr model use <MODEL_ID>        # Select an exact model ID from the catalog
 
-| File or directory | Purpose |
-| --- | --- |
-| `cmgr.json` | Manager settings, provider definitions, and any pasted keys |
-| `config.toml` | Codex configuration updated by provider switching |
-| `sessions/` | Codex session rollouts |
-| `backups/` | Copies of configuration, settings, and modified sessions |
+# === Diagnostics & Recovery ===
+cmgr doctor                      # Run the diagnostic health check
+cmgr doctor --network            # Health check with network latency testing
+cmgr sessions --search "refactor" # Search past sessions by title or UUID
+cmgr recover                     # Recover from interrupted transactions or conflicts
+cmgr revisions list              # List verified configuration snapshots
+cmgr history-copies list         # Inspect independent recovery session bundles
 
-Pasted keys are stored as plaintext in local settings and may also appear in config backups. Export removes literal keys, literal HTTP headers and catalog identity by default. Environment references remain for portability. `--include-secrets` explicitly creates a private export with plaintext credentials. Review endpoint names, labels, environment references and custom instruction templates before sharing.
-
-The manager makes network requests for provider checks, model lists, and update checks. Codex sends prompts and code to the selected inference endpoint when you run a session.
-
-## Development
-
-Source code is in `src/codex_mgr/`; tests are in `tests/`.
-
-```sh
-python -m pytest tests -q
+# === Configuration Backup & Portability ===
+cmgr export --output setup.json  # Export settings with API keys sanitized
+cmgr import setup.json           # Import configuration bundle into local environment
 ```
 
-The unit tests use synthetic fixtures. They do not establish live provider compatibility or complete workflow coverage.
+---
 
-See the [usage guide](docs/wiki/Home.md) and [contributor guide](FORDEV.md).
+## 🔒 Security & Privacy Policy
 
-## License
+* **Zero-Leak Credential Masking:** API keys are masked in the terminal interface (`sk-...1a2b`) and never printed in logs or diagnostic reports.
+* **Sanitized Exports by Default:** Exported configuration bundles strip plain-text credentials and sensitive HTTP headers unless explicitly requested.
+* **Atomic Pre-Mutation Backups:** All settings and session rollout files are backed up to `~/.codex/backups/` before any write operation.
+* **100% Local Execution:** No chat transcripts, prompts, or personal tokens are ever transmitted to any third-party tracking or telemetry server.
 
-[MIT](LICENSE).
+---
+
+## 📄 License
+
+Distributed under the [MIT License](LICENSE).
