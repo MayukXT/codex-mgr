@@ -274,9 +274,12 @@ def test_stream_requests_explicitly_request_chat_usage():
     }
 
 
-def test_messages_refusal_remains_a_refusal():
+def test_messages_refusal_keeps_exact_text_and_classification_for_native_codex():
     result = adapt_response(messages_reply(finish="refusal"), adapt_request(request(), "messages"))
-    assert result["output"][0]["content"] == [{"type": "refusal", "refusal": "Done."}]
+    assert result["output"][0]["content"] == [
+        {"type": "output_text", "text": "Done.", "annotations": []}
+    ]
+    assert result["metadata"] == {"upstream_stop_reason": "refusal"}
 
 
 def test_messages_tool_result_images_are_preserved_and_chat_rejects_unsupported_role_images():
@@ -411,7 +414,10 @@ def test_chat_usage_incomplete_and_refusal_have_truthful_responses_fields():
     body = chat_reply(None, finish="content_filter")
     body["choices"][0]["message"]["refusal"] = "Cannot comply."
     result = adapt_response(body, adapted)
-    assert result["output"][0]["content"] == [{"type": "refusal", "refusal": "Cannot comply."}]
+    assert result["output"][0]["content"] == [
+        {"type": "output_text", "text": "Cannot comply.", "annotations": []}
+    ]
+    assert result["metadata"] == {"upstream_stop_reason": "refusal"}
     assert result["incomplete_details"]["reason"] == "content_filter"
 
 
@@ -430,6 +436,7 @@ def test_messages_cache_creation_and_reads_are_included_in_total_input_usage():
     )
     assert result["usage"]["input_tokens"] == 12 and result["usage"]["total_tokens"] == 18
     assert result["usage"]["input_tokens_details"]["cached_tokens"] == 5
+    assert result["usage"]["input_tokens_details"]["cache_write_tokens"] == 4
 
 
 @pytest.mark.parametrize("arguments", ["{", "[]", '{"path":"a","path":"b"}', '{"path":NaN}'])

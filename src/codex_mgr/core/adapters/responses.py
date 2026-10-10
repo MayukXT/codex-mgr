@@ -28,11 +28,8 @@ def response_usage(usage, protocol):
         raise ProtocolError("Invalid upstream token usage.")
     if protocol == "messages":
         cached = _tokens(usage.get("cache_read_input_tokens", 0))
-        inputs = (
-            _tokens(usage.get("input_tokens"))
-            + cached
-            + _tokens(usage.get("cache_creation_input_tokens", 0))
-        )
+        written = _tokens(usage.get("cache_creation_input_tokens", 0))
+        inputs = _tokens(usage.get("input_tokens")) + cached + written
         outputs = _tokens(usage.get("output_tokens"))
         reasoning = 0
     else:
@@ -53,13 +50,16 @@ def response_usage(usage, protocol):
             )
         ):
             raise ProtocolError("Inconsistent upstream token usage.")
-    return {
+    result = {
         "input_tokens": inputs,
         "output_tokens": outputs,
         "total_tokens": inputs + outputs,
         "input_tokens_details": {"cached_tokens": cached},
         "output_tokens_details": {"reasoning_tokens": reasoning},
     }
+    if protocol == "messages" and written:
+        result["input_tokens_details"]["cache_write_tokens"] = written
+    return result
 
 
 def message_item(content, *, incomplete=False):
@@ -101,7 +101,7 @@ def _chat_output(body, adapted):
     if message.get("content") is not None:
         content.append({"type": "output_text", "text": text(message["content"]), "annotations": []})
     if message.get("refusal") is not None:
-        content.append({"type": "refusal", "refusal": text(message["refusal"])})
+        content.append({"type": "output_text", "text": text(message["refusal"]), "annotations": []})
     output = [message_item(content, incomplete=incomplete)] if content else []
     calls = message.get("tool_calls") or []
     if (
@@ -155,11 +155,7 @@ def _messages_output(body, adapted):
         if block.get("citations"):
             raise ProtocolError("Upstream citations need a verified response mapping.")
         if block.get("type") == "text":
-            content = (
-                {"type": "refusal", "refusal": text(block.get("text"))}
-                if finish == "refusal"
-                else {"type": "output_text", "text": text(block.get("text")), "annotations": []}
-            )
+            content = {"type": "output_text", "text": text(block.get("text")), "annotations": []}
             output.append(
                 message_item(
                     [content],
@@ -196,7 +192,7 @@ def adapt_response(body, adapted: AdaptedRequest):
             else _messages_output(body, adapted)
         )
         model = text(body.get("model", adapted.model), "Invalid upstream model ID.", nonempty=True)
-        return {
+        response = {
             "id": identifier("resp_"),
             "object": "response",
             "created_at": int(time.time()),
@@ -207,6 +203,16 @@ def adapt_response(body, adapted: AdaptedRequest):
             "incomplete_details": {"reason": reason} if incomplete else None,
             "usage": response_usage(body.get("usage"), adapted.protocol),
         }
+        # Native Codex reads output_text but has no refusal content variant.
+        # Keep the exact wording readable and retain its classification separately.
+        refused = (
+            body["choices"][0]["message"].get("refusal") is not None
+            if adapted.protocol == "chat"
+            else body.get("stop_reason") == "refusal"
+        )
+        if refused:
+            response["metadata"] = {"upstream_stop_reason": "refusal"}
+        return response
     except ProtocolError:
         raise
     except (ValueError, TypeError, RecursionError, OverflowError) as exc:
