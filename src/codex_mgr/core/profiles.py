@@ -78,6 +78,8 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
         raise ConfigurationError(
             "This connection needs a verified Responses adapter before activation."
         )
+    if provider.messages_summary != "none":
+        raise ConfigurationError("Messages summaries require an owned Messages adapter launch.")
     if (
         not provider.streaming
         or provider.max_output_tokens is not None

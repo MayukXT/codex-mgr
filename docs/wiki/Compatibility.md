@@ -8,6 +8,8 @@ Codex's native custom transport is Responses. `cmgr start` and the menu's new-se
 
 Synthetic native checks cover exact text, function/custom-tool results and adapter ownership. They do not establish access to a live provider account or every model's dialect. Unsupported request fields and opaque history fail rather than being silently discarded. Messages thinking currently requires an explicit supported budget and native reasoning effort; model-specific adaptive thinking and effort mappings still need validation. A model that requires those newer controls is not covered by the budget-only path.
 
+Messages can deliver an explicitly requested readable summary with `messages_summary = "auto"` in manager settings. Supplied summary text is preserved exactly after complete reply validation; empty or redacted blocks produce no summary. The default is `none`. Concise and detailed summary requests are refused because the adapter does not promise those length controls. Signed replay remains separate from display, and modern prefix preservation still needs validation. See [thinking display](https://platform.claude.com/docs/en/build-with-claude/thinking) and [configuration](Configuration.md).
+
 Model-list requests can reveal catalog entries without proving inference permission. Verify model IDs, tool support, authentication, context limits, and transport with the selected provider. Manual IDs remain provider-specific.
 
 Older direct Anthropic model versions can be retired while a gateway retains an alias. Check the gateway independently. OpenCode Zen uses different transports for different model families.

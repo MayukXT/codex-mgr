@@ -54,7 +54,11 @@ def _controls(provider):
         raise ConfigurationError("The selected model does not advertise this reasoning effort.")
     try:
         adapt_request(
-            {"model": provider.default_model, "input": "", "reasoning": {"effort": effort}},
+            {
+                "model": provider.default_model,
+                "input": "",
+                "reasoning": {"effort": effort, "summary": provider.messages_summary},
+            },
             "messages" if provider.wire_api == "anthropic_proxy" else "chat",
             max_output_tokens=provider.max_output_tokens,
             thinking_budget=provider.reasoning_budget,
@@ -119,7 +123,7 @@ class AdapterLaunch:
                 "model": self._provider.default_model,
                 "model_provider": identity,
                 "model_reasoning_effort": self._effort,
-                "model_reasoning_summary": "none",
+                "model_reasoning_summary": self._provider.messages_summary,
                 "web_search": "disabled",
             }
             if self._provider.context_window_limit is not None:

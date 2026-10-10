@@ -17,6 +17,8 @@ A compatible connection needs a model ID and protocol in addition to its endpoin
 
 Fresh Chat and Messages sessions use temporary routing through `cmgr start` or the menu's new-session action. The saved active connection remains the original upstream endpoint, credentials and model. Reloading manager settings preserves that selection instead of importing the unchanged native base selection over it. Running Codex directly uses its native configuration; run it through the manager to use the adapter. See [compatibility](Compatibility.md) for supported controls and current resume limits.
 
+For a Messages connection with a supported explicit thinking budget, readable summaries are optional. In that connection's entry in `cmgr.json`, set `messages_summary` to `auto` to show the provider-supplied summary, or `none` to hide it (the default). Keep a compatible `reasoning_budget`, `reasoning_effort` and output cap, then start through `cmgr start`. The launch uses temporary native summary settings and leaves `config.toml` unchanged. Hidden or redacted blocks are never expanded into readable text.
+
 ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Codex manage sign-in and refresh. An API key authorizes the selected API endpoint; a subscription does not establish access to an unrelated gateway.
 
 Prefer an environment-variable credential reference over storing a pasted key. Never put a key in an endpoint URL. See [privacy](Security-And-Privacy-Guide.md) and [compatibility](Compatibility.md).

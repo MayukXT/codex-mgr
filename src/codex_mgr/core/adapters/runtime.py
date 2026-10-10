@@ -139,6 +139,7 @@ class AdapterRuntime:
         self._model = provider.default_model
         self._max_output_tokens = provider.max_output_tokens
         self._thinking_budget = provider.reasoning_budget
+        self._thinking_summary = provider.messages_summary if self._protocol == "messages" else None
         self._upstream_streaming = provider.streaming
         self._max_active, self._idle_timeout, self._request_timeout = (
             max_active,
@@ -320,6 +321,7 @@ class AdapterRuntime:
                 self._protocol,
                 max_output_tokens=self._max_output_tokens,
                 thinking_budget=self._thinking_budget,
+                thinking_summary=self._thinking_summary,
                 continuations=self._continuations,
             )
         except (

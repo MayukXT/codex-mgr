@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
+from test_continuations import SIGNED, thinking_stream
+from test_protocol_codecs import messages_reply
 from test_streaming_codecs import request, text_stream, wire
 
 from codex_mgr.config.schema import ProviderConfig
@@ -204,6 +206,45 @@ def test_disabled_upstream_streaming_keeps_native_stream_contract(monkeypatch):
             assert events[-1]["type"] == "response.completed"
             assert events[-1]["response"]["output"][0]["content"][0]["text"] == "Exact buffered.\n"
             assert received[0][2]["stream"] is False and "stream_options" not in received[0][2]
+
+
+@pytest.mark.parametrize("saved", ["none", "auto"])
+@pytest.mark.parametrize("supplied", ["missing", "null", "none", "auto"])
+@pytest.mark.parametrize("buffered", [False, True])
+def test_saved_messages_summary_applies_when_native_omits_it(
+    saved, supplied, buffered, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    body = messages_reply([SIGNED, {"type": "text", "text": "Exact response."}])
+    reply = json.dumps(body).encode() if buffered else wire(thinking_stream(), "messages")[0]
+    with upstream("messages", buffered=buffered, raw=reply) as (provider, received, _):
+        provider.reasoning_budget = 1024
+        provider.messages_summary = saved
+        provider.streaming = not buffered
+        selected = {**payload(), "reasoning": {"effort": "medium"}}
+        if supplied != "missing":
+            selected["reasoning"]["summary"] = None if supplied == "null" else supplied
+        with AdapterRuntime(provider) as runtime:
+            response = httpx.post(
+                runtime.base_url + "/responses",
+                headers=headers(runtime),
+                json=selected,
+                trust_env=False,
+            )
+            assert response.status_code == 200
+            events = [event.data for event in json_events([response.content])]
+            assert events[-1]["type"] == "response.completed"
+            chosen = saved if supplied in {"missing", "null"} else supplied
+            assert received[0][2]["thinking"]["display"] == (
+                "summarized" if chosen == "auto" else "omitted"
+            )
+            expected = (
+                [{"type": "summary_text", "text": SIGNED["thinking"]}] if chosen == "auto" else []
+            )
+            assert events[-1]["response"]["output"][0]["summary"] == expected
+            if chosen == "none":
+                assert SIGNED["thinking"] not in str(events)
+            assert SIGNED["signature"] not in str(events)
 
 
 @pytest.mark.parametrize("status", [401, 403, 429, 500])

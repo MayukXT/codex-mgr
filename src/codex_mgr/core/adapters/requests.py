@@ -262,7 +262,7 @@ def _choice(request, protocol, registry):
     return result, parallel
 
 
-def _controls(request, payload, protocol, max_output_tokens, thinking_budget):
+def _controls(request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary):
     cap = request.get("max_output_tokens")
     if cap is None:
         cap = max_output_tokens
@@ -285,11 +285,14 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget):
             )
         payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
     reasoning = request.get("reasoning")
+    summary = thinking_summary
     if reasoning is not None:
         if not isinstance(reasoning, dict) or set(reasoning) - {"effort", "summary", "context"}:
             raise ProtocolError("Invalid reasoning controls.")
         effort = reasoning.get("effort")
-        if reasoning.get("summary") not in {None, "none"} or reasoning.get("context") is not None:
+        if reasoning.get("summary") is not None:
+            summary = reasoning["summary"]
+        if reasoning.get("context") is not None:
             raise ProtocolError("Reasoning summaries/context need a verified adapter mapping.")
         if effort is not None:
             effort = text(effort, "Invalid reasoning effort.", nonempty=True)
@@ -301,6 +304,15 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget):
                 raise ProtocolError(
                     "Messages reasoning needs a compatible explicit thinking budget."
                 )
+    if summary not in {None, "none", "auto"} or (summary == "auto" and protocol != "messages"):
+        raise ProtocolError("Reasoning summaries need a verified adapter mapping.")
+    active_thinking = (
+        protocol == "messages" and payload.get("thinking", {}).get("type") == "enabled"
+    )
+    if summary == "auto" and not active_thinking:
+        raise ProtocolError("Readable summaries require supported active Messages thinking.")
+    if active_thinking and summary is not None:
+        payload["thinking"]["display"] = "summarized" if summary == "auto" else "omitted"
     for key in ("temperature", "top_p"):
         if request.get(key) is not None:
             value = request[key]
@@ -330,7 +342,13 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget):
 
 
 def _adapt_request(
-    request, protocol, *, max_output_tokens=None, thinking_budget=None, continuations=None
+    request,
+    protocol,
+    *,
+    max_output_tokens=None,
+    thinking_budget=None,
+    thinking_summary=None,
+    continuations=None,
 ):
     """Map a complete supported history; no HTTP, files, logging or input mutation."""
     if protocol not in {"chat", "messages"} or not isinstance(request, dict):
@@ -403,14 +421,20 @@ def _adapt_request(
             payload["parallel_tool_calls"] = parallel
     elif request.get("tool_choice", "auto") not in {"auto", "none"}:
         raise ProtocolError("Tool choice requires declared tools.")
-    _controls(request, payload, protocol, max_output_tokens, thinking_budget)
+    _controls(request, payload, protocol, max_output_tokens, thinking_budget, thinking_summary)
     if len(encoded_json(payload).encode()) > _MAX_REQUEST_BYTES:
         raise ProtocolError("Translated request exceeds the size limit.")
     return AdaptedRequest(protocol, model, deepcopy(payload), registry, continuations)
 
 
 def adapt_request(
-    request, protocol, *, max_output_tokens=None, thinking_budget=None, continuations=None
+    request,
+    protocol,
+    *,
+    max_output_tokens=None,
+    thinking_budget=None,
+    thinking_summary=None,
+    continuations=None,
 ):
     try:
         return _adapt_request(
@@ -418,6 +442,7 @@ def adapt_request(
             protocol,
             max_output_tokens=max_output_tokens,
             thinking_budget=thinking_budget,
+            thinking_summary=thinking_summary,
             continuations=continuations,
         )
     except ProtocolError:

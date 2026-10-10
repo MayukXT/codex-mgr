@@ -429,7 +429,7 @@ print(json.dumps({'returncode': result.returncode}), flush=True)
 """
 
 
-def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False):
+def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False, summary="none"):
     home = get_codex_home()
     home.mkdir(parents=True, exist_ok=True)
     work = tmp_path / "workspace"
@@ -455,7 +455,7 @@ def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False):
         "model": "synthetic/exact:model",
         "model_provider": "fixture",
         "model_reasoning_effort": "medium" if reasoning else "none",
-        "model_reasoning_summary": "none",
+        "model_reasoning_summary": summary,
         "web_search": "disabled",
         "cli_auth_credentials_store": "file",
         "projects": {str(work): {"trust_level": "trusted"}},
@@ -806,8 +806,9 @@ def test_native_custom_patch_result_and_resume_round_trip(
             assert "read-only sandbox" in output
 
 
+@pytest.mark.parametrize("summary", ["none", "auto"])
 def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
-    tmp_path, monkeypatch
+    summary, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
     signed = {
@@ -855,15 +856,33 @@ def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
 
     with upstream("messages", responder=respond) as (provider, _, _):
         provider.reasoning_budget = 1024
+        provider.messages_summary = summary
         with AdapterRuntime(provider) as runtime:
-            events = launch(tmp_path, runtime, writable=True, reasoning=True)
+            events = launch(tmp_path, runtime, writable=True, reasoning=True, summary=summary)
             session = next(
                 event["thread_id"] for event in events if event["type"] == "thread.started"
             )
         assert (tmp_path / "workspace/signed.txt").read_bytes() == b"Exact signed file.\n"
+        path = find_session_by_id_or_title(session).require_rollout()
+        saved = [
+            json.loads(raw)["payload"]
+            for raw in path.read_bytes().splitlines()
+            if json.loads(raw).get("type") == "response_item"
+            and json.loads(raw)["payload"].get("type") == "reasoning"
+        ]
+        expected = (
+            [{"type": "summary_text", "text": signed["thinking"]}] if summary == "auto" else []
+        )
+        assert [item["summary"] for item in saved] == [expected, []]
         with AdapterRuntime(provider) as restarted:
-            launch(tmp_path, restarted, session=session, writable=True, reasoning=True)
+            launch(
+                tmp_path, restarted, session=session, writable=True, reasoning=True, summary=summary
+            )
     assert len(replies) == 3
+    assert all(
+        body["thinking"]["display"] == ("summarized" if summary == "auto" else "omitted")
+        for body in replies
+    )
     for body in replies[1:]:
         blocks = [item for message in body["messages"] for item in message["content"]]
         assert [item for item in blocks if item["type"] in {"thinking", "redacted_thinking"}] == [

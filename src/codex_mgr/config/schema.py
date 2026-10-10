@@ -116,6 +116,10 @@ class ProviderConfig(BaseModel):
         gt=0,
         description="Explicit thinking budget in tokens (e.g. 8192, 16384 for Claude/thinking models)",
     )
+    messages_summary: Literal["none", "auto"] = Field(
+        default="none",
+        description="Opt-in display of provider-supplied Messages thinking summaries",
+    )
 
     @field_validator("id", "codex_provider_id")
     @classmethod

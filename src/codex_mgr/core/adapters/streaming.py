@@ -121,11 +121,38 @@ class _Lifecycle:
                         self.event("response.content_part.done", **fields, part=deepcopy(part))
                     )
             elif item["type"] == "reasoning":
+                added = {**item, "summary": [], "encrypted_content": None}
                 events.append(
-                    self.event(
-                        "response.output_item.added", output_index=index, item=deepcopy(item)
-                    )
+                    self.event("response.output_item.added", output_index=index, item=added)
                 )
+                for summary_index, part in enumerate(item["summary"]):
+                    fields = {
+                        "output_index": index,
+                        "summary_index": summary_index,
+                        "item_id": item["id"],
+                    }
+                    events.append(
+                        self.event(
+                            "response.reasoning_summary_part.added",
+                            **fields,
+                            part={"type": "summary_text", "text": ""},
+                        )
+                    )
+                    events.append(
+                        self.event(
+                            "response.reasoning_summary_text.delta", **fields, delta=part["text"]
+                        )
+                    )
+                    events.append(
+                        self.event(
+                            "response.reasoning_summary_text.done", **fields, text=part["text"]
+                        )
+                    )
+                    events.append(
+                        self.event(
+                            "response.reasoning_summary_part.done", **fields, part=deepcopy(part)
+                        )
+                    )
             else:
                 added = deepcopy(item)
                 key = "arguments" if item["type"] == "function_call" else "input"

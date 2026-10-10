@@ -175,12 +175,20 @@ def _messages_output(body, adapted):
                 or adapted.payload.get("thinking", {}).get("type") != "enabled"
             ):
                 raise ProtocolError("Messages thinking needs an enabled, bound continuation.")
+            encrypted = adapted.continuations.seal(block, adapted.model)
+            summary = []
+            if (
+                block["type"] == "thinking"
+                and adapted.payload["thinking"].get("display") == "summarized"
+                and block["thinking"]
+            ):
+                summary = [{"type": "summary_text", "text": block["thinking"]}]
             output.append(
                 {
                     "type": "reasoning",
                     "id": identifier("rs_"),
-                    "summary": [],
-                    "encrypted_content": adapted.continuations.seal(block, adapted.model),
+                    "summary": summary,
+                    "encrypted_content": encrypted,
                 }
             )
         elif block.get("type") == "tool_use" and finish == "tool_use":

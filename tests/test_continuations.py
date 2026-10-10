@@ -174,6 +174,177 @@ def thinking_stream():
     ]
 
 
+def summarized(owner=None, *, summary="auto", **kwargs):
+    return adapt_request(
+        request(reasoning={"effort": "medium", "summary": summary}, **kwargs),
+        "messages",
+        thinking_budget=1024,
+        continuations=owner or codec(),
+    )
+
+
+@pytest.mark.parametrize("summary", ["auto", "none"])
+@pytest.mark.parametrize("value", [SIGNED, {**SIGNED, "thinking": ""}, REDACTED])
+def test_supplied_summary_is_opt_in_exact_and_does_not_alter_replay(summary, value):
+    selected = summarized(summary=summary)
+    assert selected.payload["thinking"]["display"] == (
+        "summarized" if summary == "auto" else "omitted"
+    )
+    body = messages_reply([value, {"type": "text", "text": "Exact reply."}])
+    response = adapt_response(body, selected)
+    item = response["output"][0]
+    expected = (
+        [{"type": "summary_text", "text": value["thinking"]}]
+        if summary == "auto" and value.get("thinking")
+        else []
+    )
+    assert item["summary"] == expected
+    replay = summarized(input=[*response["output"], {"role": "user", "content": "Continue."}])
+    assert replay.payload["messages"][0]["content"][0] == value
+    assert value.get("signature", value.get("data")) not in str(expected)
+
+
+def assert_summary_lifecycle(events, expected):
+    assert_lifecycle(events)
+    summary_events = [event for event in events if ".reasoning_summary_" in event["type"]]
+    if not expected:
+        assert summary_events == []
+        return
+    assert [event["type"] for event in summary_events] == [
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary_text.done",
+        "response.reasoning_summary_part.done",
+    ]
+    assert summary_events[0]["part"] == {"type": "summary_text", "text": ""}
+    assert summary_events[1]["delta"] == expected
+    assert summary_events[2]["text"] == expected
+    assert summary_events[3]["part"] == {"type": "summary_text", "text": expected}
+    done = next(
+        event
+        for event in events
+        if event["type"] == "response.output_item.done" and event["item"]["type"] == "reasoning"
+    )
+    assert all(event["item_id"] == done["item"]["id"] for event in summary_events)
+    assert all(
+        event["output_index"] == 0 and event["summary_index"] == 0 for event in summary_events
+    )
+    assert summary_events[-1]["sequence_number"] < done["sequence_number"]
+
+
+@pytest.mark.parametrize("summary", ["auto", "none"])
+@pytest.mark.parametrize("buffered", [False, True])
+def test_validated_stream_summary_events_keep_exact_text_and_item_identity(summary, buffered):
+    selected = summarized(summary=summary)
+    body = messages_reply([SIGNED, REDACTED, {"type": "text", "text": "Exact response."}])
+    events = list(
+        buffered_stream(body, selected)
+        if buffered
+        else adapt_stream(wire(thinking_stream(), "messages", chunk_size=1), selected)
+    )
+    assert events[-1]["type"] == "response.completed"
+    assert_summary_lifecycle(events, SIGNED["thinking"] if summary == "auto" else None)
+    assert SIGNED["signature"] not in str(events) and REDACTED["data"] not in str(events)
+    output = events[-1]["response"]["output"]
+    assert selected.continuations.open(output[0]["encrypted_content"], selected.model) == SIGNED
+    assert selected.continuations.open(output[1]["encrypted_content"], selected.model) == REDACTED
+
+
+@pytest.mark.parametrize(
+    "corruption", ["missing-signature", "truncated", "trailing", "transformed"]
+)
+def test_bad_stream_never_publishes_readable_summaries(corruption):
+    source = thinking_stream()
+    if corruption == "missing-signature":
+        source[3]["delta"]["signature"] = ""
+    elif corruption == "truncated":
+        source.pop()
+    elif corruption == "trailing":
+        source.append(b"data: private-invalid-json\n\n")
+    else:
+        source[-2]["input_transformations"] = [{"reason": "synthetic-private"}]
+    events = list(adapt_stream(wire(source, "messages"), summarized()))
+    assert events[-1]["type"] == "response.failed"
+    assert all(".reasoning_summary_" not in event["type"] for event in events)
+    assert SIGNED["thinking"] not in str(events) and "synthetic-private" not in str(events)
+    assert all(
+        event["type"] != "response.output_item.done" or event["item"]["type"] != "reasoning"
+        for event in events
+    )
+
+
+@pytest.mark.parametrize("corruption", ["missing-signature", "transformed", "late-invalid-block"])
+def test_invalid_buffered_reply_never_returns_a_summary(corruption):
+    body = messages_reply([dict(SIGNED), {"type": "text", "text": "Reply."}])
+    if corruption == "missing-signature":
+        body["content"][0]["signature"] = ""
+    elif corruption == "transformed":
+        body["input_transformations"] = [{"reason": "synthetic-private"}]
+    else:
+        body["content"].append({"type": "unsupported", "text": "synthetic-private"})
+    with pytest.raises(ProtocolError) as failure:
+        adapt_response(body, summarized())
+    assert SIGNED["thinking"] not in str(failure.value) and "synthetic-private" not in str(
+        failure.value
+    )
+
+
+@pytest.mark.parametrize("summary", ["auto", "none"])
+def test_async_summary_delivery_waits_for_verified_eof(summary):
+    async def run():
+        async def chunks():
+            for chunk in wire(thinking_stream(), "messages", chunk_size=11):
+                yield chunk
+
+        return [event async for event in async_adapt_stream(chunks(), summarized(summary=summary))]
+
+    events = asyncio.run(run())
+    assert events[-1]["type"] == "response.completed"
+    assert_summary_lifecycle(events, SIGNED["thinking"] if summary == "auto" else None)
+
+
+def test_stream_summary_is_withheld_until_upstream_eof():
+    ended = []
+
+    def chunks():
+        yield from wire(thinking_stream(), "messages", chunk_size=11)
+        ended.append(True)
+
+    for event in adapt_stream(chunks(), summarized()):
+        if ".reasoning_summary_" in event["type"] or event["type"] == "response.output_item.done":
+            assert ended == [True]
+
+
+def test_cancel_before_eof_cannot_publish_readable_reasoning():
+    source = wire(thinking_stream(), "messages", chunk_size=11)
+    iterator = adapt_stream(source, summarized())
+    observed = []
+    for event in iterator:
+        observed.append(event)
+        if event["type"] == "response.output_text.delta":
+            break
+    iterator.close()
+    assert all(".reasoning_summary_" not in event["type"] for event in observed)
+    assert SIGNED["thinking"] not in str(observed)
+
+
+@pytest.mark.parametrize("protocol", ["messages", "chat"])
+@pytest.mark.parametrize("summary", ["concise", "detailed"])
+def test_summary_length_requests_are_not_silently_reinterpreted(protocol, summary):
+    with pytest.raises(ProtocolError, match="summar"):
+        adapt_request(
+            request(reasoning={"effort": "medium", "summary": summary}),
+            protocol,
+            thinking_budget=1024 if protocol == "messages" else None,
+        )
+
+
+@pytest.mark.parametrize("protocol", ["messages", "chat"])
+def test_summary_requests_require_supported_active_thinking(protocol):
+    with pytest.raises(ProtocolError, match="summar"):
+        adapt_request(request(reasoning={"effort": "none", "summary": "auto"}), protocol)
+
+
 @pytest.mark.parametrize("chunk_size", [1, 11, None])
 def test_streamed_signed_and_redacted_blocks_preserve_order_and_exact_history(chunk_size):
     original = adapted()

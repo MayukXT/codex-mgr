@@ -10,7 +10,7 @@ from codex_mgr.config.schema import ProviderConfig
 from codex_mgr.core.adapters import launch
 from codex_mgr.core.adapters.runtime import AdapterError
 from codex_mgr.core.native_config import NativeConfiguration, verify_before_activation
-from codex_mgr.core.profiles import ConfigurationError
+from codex_mgr.core.profiles import ConfigurationError, prepare_configuration
 from codex_mgr.utils.paths import get_codex_home, get_config_toml_path
 
 
@@ -166,6 +166,8 @@ def test_native_policy_and_project_conflicts_close_scope_before_launch(
             "below",
         ),
         ({"wire_api": "chat", "reasoning_budget": 1024}, "Messages"),
+        ({"wire_api": "chat", "messages_summary": "auto"}, "summar"),
+        ({"wire_api": "anthropic_proxy", "messages_summary": "auto"}, "summar"),
     ],
 )
 def test_unverified_controls_fail_before_owner_creation(changes, fragment, boundaries):
@@ -182,3 +184,31 @@ def test_disabled_thinking_ignores_retained_budget_without_changing_settings(bou
         assert factory.call_args.args[0].reasoning_budget is None
         assert tomlkit.parse(pre.call_args.args[0].decode())["model_reasoning_effort"] == "none"
     assert selected.reasoning_budget == 2048
+
+
+@pytest.mark.parametrize("summary", ["none", "auto"])
+def test_messages_summary_preference_is_scoped_verified_and_preserved(summary, boundaries):
+    runtime, factory, pre, post = boundaries
+    selected = provider(
+        wire_api="anthropic_proxy",
+        reasoning_budget=1024,
+        reasoning_effort="medium",
+        messages_summary=summary,
+    )
+    original = selected.model_dump()
+    with launch.AdapterLaunch(selected):
+        generated = tomlkit.parse(pre.call_args.args[0].decode()).unwrap()
+        assert generated["model_reasoning_summary"] == summary
+        overrides = post.call_args.kwargs["overrides"]
+        assert f'model_reasoning_summary="{summary}"' in overrides
+        assert factory.call_args.args[0].messages_summary == summary
+    runtime.close.assert_called_once()
+    assert selected.model_dump() == original
+    assert not get_codex_home().exists()
+
+
+def test_messages_summary_control_cannot_be_discarded_on_a_native_connection():
+    selected = provider(wire_api="responses", messages_summary="auto")
+    with pytest.raises(ConfigurationError, match="Messages summaries"):
+        prepare_configuration(selected, None)
+    assert not get_codex_home().exists()
