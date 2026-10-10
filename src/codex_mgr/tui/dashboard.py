@@ -47,6 +47,7 @@ def run_main_dashboard() -> None:
                 [
                     Choice("revisions", "Configuration revisions"),
                     Choice("recovery", "Activation recovery"),
+                    Choice("history", "History copies"),
                     Choice(None, "Exit"),
                 ],
                 allow_back=True,
@@ -59,6 +60,10 @@ def run_main_dashboard() -> None:
                 from codex_mgr.tui.recovery_view import manage_activation_recovery
 
                 manage_activation_recovery()
+            elif action == "history":
+                from codex_mgr.tui.history_copy_view import manage_history_copies
+
+                manage_history_copies()
             else:
                 return
             continue
@@ -142,6 +147,7 @@ def _handle_diagnostics_tools() -> None:
                 Choice(value="update", name="4. Updates"),
                 Choice(value="recovery", name="5. Activation recovery"),
                 Choice(value="revisions", name="6. Configuration revisions"),
+                Choice(value="history", name="7. History copies"),
                 Choice(value=None, name="Back"),
             ],
             default="doctor",
@@ -153,6 +159,7 @@ def _handle_diagnostics_tools() -> None:
                 "4": "update",
                 "5": "recovery",
                 "6": "revisions",
+                "7": "history",
             },
         )
 
@@ -176,6 +183,11 @@ def _handle_diagnostics_tools() -> None:
             from codex_mgr.tui.revision_view import manage_configuration_revisions
 
             manage_configuration_revisions()
+
+        elif action == "history":
+            from codex_mgr.tui.history_copy_view import manage_history_copies
+
+            manage_history_copies()
 
 
 def _handle_switch_provider() -> None:

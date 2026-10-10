@@ -65,6 +65,15 @@ class HistoryCopyInfo:
     sanitized_count: int
     source_count: int
     target: Path = field(repr=False)
+    provider: str
+    target_present: bool
+    review_digest: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class HistoryCopyEntry:
+    id: str
+    status: str
 
 
 def _safe(path: Path, home: Path) -> Path:
@@ -307,7 +316,7 @@ def _bundle(identity: str, home: Path, limits: HistoryCopyLimits):
     return folder, record, encoded, target
 
 
-def _info(record, target):
+def _info(record, target, encoded):
     return HistoryCopyInfo(
         record["id"],
         record["original_id"],
@@ -315,14 +324,53 @@ def _info(record, target):
         record["sanitized_count"],
         len(record["sources"]),
         target,
+        record["provider"],
+        target.exists(),
+        hashlib.sha256(encoded).hexdigest(),
     )
+
+
+def list_history_copies(
+    *, limit: int | None = None, offset: int = 0, limits: HistoryCopyLimits | None = None
+) -> list[HistoryCopyEntry]:
+    """List UUID folders without reading transcripts or claiming bundle integrity."""
+    if (
+        type(offset) is not int
+        or offset < 0
+        or (limit is not None and (type(limit) is not int or limit <= 0))
+    ):
+        raise ValueError("Choose a positive page size and a nonnegative offset.")
+    home = get_codex_home()
+    limits = limits or HistoryCopyLimits()
+    folder = _safe(home / "backups" / "history-copies", home)
+    if not folder.exists():
+        return []
+    result = []
+    with os.scandir(folder) as entries:
+        for count, entry in enumerate(entries, 1):
+            if count > limits.lineage.directory_entries:
+                raise HistoryReadError("History copy inventory exceeds its directory entry limit.")
+            try:
+                identity = canonical_session_id(entry.name)
+            except ValueError:
+                continue
+            if identity != entry.name:
+                continue
+            status = (
+                "unchecked"
+                if not is_linked_path(Path(entry.path)) and entry.is_dir(follow_symlinks=False)
+                else "unsafe"
+            )
+            result.append(HistoryCopyEntry(identity, status))
+    result.sort(key=lambda item: item.id)
+    return result[offset : None if limit is None else offset + limit]
 
 
 def read_history_copy(identity: str, *, limits: HistoryCopyLimits | None = None) -> HistoryCopyInfo:
     """Inspect verified recovery metadata without exposing transcript contents."""
     identity = canonical_session_id(identity)
-    _, record, _, target = _bundle(identity, get_codex_home(), limits or HistoryCopyLimits())
-    return _info(record, target)
+    _, record, encoded, target = _bundle(identity, get_codex_home(), limits or HistoryCopyLimits())
+    return _info(record, target, encoded)
 
 
 def _has_prefix(path, candidate, size):
@@ -396,8 +444,8 @@ def _publish(folder, record, encoded, target, home, limits):
             temporary.unlink(missing_ok=True)
     if record["state"] != "published":
         record["state"] = "published"
-        _journal(folder, record, expected=encoded)
-    return target
+        encoded = _journal(folder, record, expected=encoded)
+    return target, encoded
 
 
 def recover_history_copy(
@@ -405,6 +453,7 @@ def recover_history_copy(
     *,
     publish: bool = False,
     allow_reasoning_loss: bool = False,
+    expected_digest: str | None = None,
     limits: HistoryCopyLimits | None = None,
 ) -> HistoryCopyInfo:
     """Explicitly settle/re-publish a verified independent copy; never launch Codex.
@@ -414,8 +463,12 @@ def recover_history_copy(
     may since have moved or disappeared; recovery uses the complete private bundle.
     """
     identity, home = canonical_session_id(identity), get_codex_home()
+    if type(publish) is not bool:
+        raise ValueError("Choose explicit history publication controls.")
     limits = limits or HistoryCopyLimits()
     folder, record, encoded, target = _bundle(identity, home, limits)
+    if expected_digest is not None and hashlib.sha256(encoded).hexdigest() != expected_digest:
+        raise FileConflictError("History recovery changed after inspection; review it again.")
     if publish and record["sanitized_count"] and allow_reasoning_loss is not True:
         raise BridgeError("This copy requires explicit consent to remove encrypted items.")
     with session_write_guards(((identity, target),)):
@@ -423,8 +476,10 @@ def recover_history_copy(
         if current_encoded != encoded:
             raise FileConflictError("History recovery changed after inspection; review it again.")
         if publish or target.exists():
-            _publish(folder, current, current_encoded, target, home, limits)
-        return _info(current, target)
+            target, current_encoded = _publish(
+                folder, current, current_encoded, target, home, limits
+            )
+        return _info(current, target, current_encoded)
 
 
 @dataclass
@@ -528,10 +583,10 @@ class PreparedHistoryCopy:
                 "sources": sources,
                 "sanitized_count": self.sanitized_count,
             }
-            _journal(folder, record, expected=None)
+            encoded = _journal(folder, record, expected=None)
             _bundle(self.id, home, self.limits)
             self._snapshotted = True
-        return _info(record, self.target)
+        return _info(record, self.target, encoded)
 
     def publish(self, *, allow_reasoning_loss: bool = False) -> Path:
         """Publish a reviewed independent UUID, preserving every original and index."""
@@ -540,7 +595,7 @@ class PreparedHistoryCopy:
         self.snapshot()
         with self._guard():
             folder, record, encoded, target = _bundle(self.id, self.lineage.home, self.limits)
-            return _publish(folder, record, encoded, target, self.lineage.home, self.limits)
+            return _publish(folder, record, encoded, target, self.lineage.home, self.limits)[0]
 
 
 @contextmanager

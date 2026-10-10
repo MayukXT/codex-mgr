@@ -21,6 +21,11 @@ from codex_mgr.core.activation import (
     recover_pending_activation,
 )
 from codex_mgr.core.backup import list_session_backups, restore_session_backup
+from codex_mgr.core.history_copy import (
+    list_history_copies,
+    read_history_copy,
+    recover_history_copy,
+)
 from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
 from codex_mgr.core.profiles import ConfigurationError
 from codex_mgr.core.providers import delete_provider
@@ -164,6 +169,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument("--list", action="store_true", help="List available recovery snapshots")
     p_restore.add_argument("--snapshot", help="Exact snapshot filename from --list")
 
+    copies = subparsers.add_parser("history-copies", help="Inspect and recover independent copies")
+    copy_actions = copies.add_subparsers(dest="action", required=True)
+    copy_list = copy_actions.add_parser("list", help="List unchecked copy UUIDs")
+    copy_list.add_argument("--limit", type=int, help="Page size (default: all copies)")
+    copy_list.add_argument("--offset", type=int, default=0)
+    copy_list.add_argument("--json", action="store_true")
+    copy_inspect = copy_actions.add_parser("inspect", help="Verify one complete private bundle")
+    copy_inspect.add_argument("copy_id", help="Exact copy UUID from the listing")
+    copy_inspect.add_argument("--json", action="store_true")
+    copy_recover = copy_actions.add_parser(
+        "recover", help="Settle a verified copy without launching"
+    )
+    copy_recover.add_argument("copy_id", help="Exact copy UUID from the listing")
+    copy_recover.add_argument(
+        "--publish", action="store_true", help="Explicitly publish the saved copy if missing"
+    )
+    copy_recover.add_argument(
+        "--allow-reasoning-loss", action="store_true", help="Allow the saved encrypted-item removal"
+    )
+
     # provider
     p_provider = subparsers.add_parser("provider", help="Manage configured providers")
     p_provider.add_argument(
@@ -298,6 +323,74 @@ def _main(argv: list[str] | None = None) -> int:
         else:
             console.print(message, markup=False)
         return code
+
+    elif args.command == "history-copies":
+        import json
+
+        from codex_mgr.tui.history_copy_view import show_history_copy_details
+
+        try:
+            if args.action == "list":
+                items = list_history_copies(limit=args.limit, offset=args.offset)
+                if args.json:
+                    sys.stdout.write(
+                        json.dumps([{"id": item.id, "status": item.status} for item in items])
+                        + "\n"
+                    )
+                else:
+                    for item in items:
+                        console.print(f"{item.id}  {item.status}", markup=False)
+                    if not items:
+                        console.print("No history copies on this page.", markup=False)
+                return 0
+            info = read_history_copy(args.copy_id)
+            if args.action == "inspect":
+                if args.json:
+                    sys.stdout.write(
+                        json.dumps(
+                            {
+                                "id": info.id,
+                                "original_id": info.original_id,
+                                "state": info.state,
+                                "provider": info.provider,
+                                "source_count": info.source_count,
+                                "encrypted_items_removed": info.sanitized_count,
+                                "target_present": info.target_present,
+                                "bundle_integrity": "verified",
+                                "target_integrity": "unchecked",
+                            }
+                        )
+                        + "\n"
+                    )
+                else:
+                    show_history_copy_details(info)
+                return 0
+            if args.publish and info.sanitized_count and not args.allow_reasoning_loss:
+                print_error(
+                    f"The saved copy removes {info.sanitized_count} encrypted items. "
+                    "Use --allow-reasoning-loss with --publish to accept that loss."
+                )
+                return 1
+            recovered = recover_history_copy(
+                info.id,
+                publish=args.publish,
+                allow_reasoning_loss=args.allow_reasoning_loss,
+                expected_digest=info.review_digest,
+            )
+            show_history_copy_details(recovered, target_verified=True)
+            console.print(
+                "Recovery settled; matching later turns were preserved."
+                if recovered.target_present
+                else "Bundle verified; the missing session remains unpublished.",
+                markup=False,
+            )
+            return 0
+        except (OSError, ValueError, RuntimeError):
+            print_error(
+                "History copy recovery stopped. Check the exact UUID, bundle integrity, "
+                "changed content, duplicate sessions and active writers."
+            )
+            return 1
 
     elif args.command == "switch":
         settings = load_settings()

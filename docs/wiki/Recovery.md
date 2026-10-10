@@ -61,7 +61,21 @@ cmgr resume <session-uuid> --to <connection-id> --allow-reasoning-loss
 
 The second form explicitly allows removal of encrypted reasoning. Readable summaries remain. The menu previews the conversion and asks before removing encrypted items. Encrypted-only compaction, messages and tool results have no portable plaintext replacement, so conversion stops and preserves the source.
 
-Changing a canonical paginated session to a different Responses connection validates its complete frozen ancestry, including compressed or archived source segments. It saves complete raw sources and the prepared candidate under `backups/history-copies/<new-uuid>/`, then publishes an independent legacy session. The original files and their native indexes stay intact. CLI and menu output identify both UUIDs; the menu explains the new identity before confirmation. A changed preview, active source writer, newly replaced root or unsafe storage stops publication. Native configuration checks run outside the history writer coordinator. A failed activation or publication can leave a prepared recovery bundle; its UUID is reported. If snapshot verification was interrupted, output labels the UUID as a recovery attempt, without claiming that a valid bundle exists. Inventory and restore commands for these bundles are still pending, so keep them private and retain the original store.
+Changing a canonical paginated session to a different Responses connection validates its complete frozen ancestry, including compressed or archived source segments. It saves complete raw sources and the prepared candidate under `backups/history-copies/<new-uuid>/`, then publishes an independent legacy session. The original files and their native indexes stay intact. CLI and menu output identify both UUIDs; the menu explains the new identity before confirmation. A changed preview, active source writer, newly replaced root or unsafe storage stops publication. Native configuration checks run outside the history writer coordinator. A failed activation or publication can leave a prepared recovery bundle; its UUID is reported. If snapshot verification was interrupted, output labels the UUID as a recovery attempt, without claiming that a valid bundle exists.
+
+```sh
+cmgr history-copies list --limit 20 --offset 0
+cmgr history-copies inspect COPY_UUID --json
+cmgr history-copies recover COPY_UUID
+cmgr history-copies recover COPY_UUID --publish
+cmgr history-copies recover COPY_UUID --publish --allow-reasoning-loss
+```
+
+Listing reads UUID folders only, in UUID order, and labels them unchecked or unsafe. It does not read transcripts or establish that an incomplete folder is recoverable. Inspection verifies the full bounded bundle, including checksums, frozen source ancestry and candidate identity. Output contains UUIDs, the recorded native connection ID, state, source/loss counts and target presence; it omits transcript contents, credentials and local paths. Target presence alone does not verify its current content. `--json` is available for listing and inspection.
+
+Recovery checks the reviewed journal again under writer coordination. It settles an existing target only when the entire saved prefix matches, retaining all later appended bytes. A missing target stays missing unless `--publish` is explicitly requested. Publication uses the complete bundle even when originals have moved or disappeared, and requires explicit consent if the saved conversion removed encrypted items. Changed prefixes, duplicate native identities, unsafe storage, corrupt bundles and active writers stop the operation. A complete bundle interrupted after journal creation can be inspected and recovered; incomplete folders remain private and unmodified.
+
+Tools > History copies provides paged selection, verified details, Verify and settle, and Publish saved copy. Confirmation defaults to No and names any encrypted-item removal. The menu remains available when manager settings cannot be read. These operations do not launch Codex, change configuration, rewrite original canonical stores or roll back later turns. Reconstructing another independent identity from the original source snapshots is not exposed by these commands.
 
 Legacy conversion preserves record order and every source byte outside the selected metadata/reasoning values. Unknown legacy records, images, function calls and tool output are retained. Canonical copies validate supported envelopes and inherited ordinal/byte cutoffs; unrelated contributing bytes remain exact apart from the new root metadata and reviewed reasoning changes. This establishes file preservation, not successful inference on every endpoint.
 
@@ -75,7 +89,7 @@ cmgr restore <session-uuid> --snapshot <listed-filename>
 
 Restore verifies snapshot integrity and identity, then saves current content in a new snapshot before replacement. Legacy backups stored under a 12-character UUID suffix are listed only when their metadata matches the complete UUID. Restoring a legacy copy also creates a checksummed copy in the full UUID directory and retains the legacy original. Corrupt, truncated or mismatched snapshots are rejected.
 
-File backup and restore apply to plain legacy JSONL sessions. Paginated, inherited or compressed sessions require a canonical store workflow; replacing one transcript could leave that store inconsistent. The manager refuses those file-only operations before changing the session. An identical snapshot is a no-op. Use Codex directly to resume compressed history until managed canonical handling is available.
+File backup and restore apply to plain legacy JSONL sessions. Paginated, inherited or compressed sessions require a canonical store workflow; replacing one transcript could leave that store inconsistent. The manager refuses those file-only operations before changing the session. An identical snapshot is a no-op. For compressed history with its original connection, use Codex directly; managed cross-connection conversion uses the independent-copy workflow above.
 
 Backups can contain prompts, source code, tool output, configuration, and credentials; keep them private. Checksums detect corruption and do not authenticate a snapshot against deliberate replacement of both the file and checksum.
 

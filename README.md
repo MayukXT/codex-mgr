@@ -51,6 +51,9 @@ cmgr start --provider my-api # Apply the connection and start a new Codex sessio
 cmgr recover                 # Recover an interrupted configuration change
 cmgr recover --list          # Review pending changes and external conflicts
 cmgr revisions list         # List config/settings snapshots and integrity
+cmgr history-copies list    # List independent recovery copy UUIDs
+cmgr history-copies inspect COPY_UUID
+cmgr history-copies recover COPY_UUID --publish
 cmgr resume SESSION_UUID --to my-api
 cmgr restore SESSION_UUID --list
 cmgr export --output setup.json --sanitize-keys
@@ -60,6 +63,8 @@ cmgr update --check
 ```
 
 `cmgr resume` activates the selected connection and model before launching Codex. Changing a canonical paginated session to a different Responses connection creates an independent session with a new UUID and preserves the original history and indexes. The menu previews this change; CLI and menu output identify the new and original sessions. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed legacy snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+
+`cmgr history-copies` inspects and recovers complete independent-copy bundles. Recovery leaves a missing target unpublished unless `--publish` is given, preserves matching later turns, and stops on conflicts. The menu exposes this under Tools > History copies. Recovery does not start Codex or change its configuration.
 
 Activation asks Codex to resolve configuration layers and managed requirements in the current working directory. It verifies the effective connection and model before saving the manager's active state. Conflicting project or managed settings stop the change; failed verification rolls back matching files and preserves external edits. Legacy `[profiles]` configurations require explicit migration and are preserved when activation stops.
 
