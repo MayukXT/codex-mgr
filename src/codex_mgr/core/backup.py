@@ -25,7 +25,7 @@ def create_session_backup(session_id: str, rollout_path: Path) -> Path:
     metadata = read_session_metadata(rollout_path)
     if metadata.id != canonical_session_id(session_id):
         raise ValueError("Rollout belongs to a different session.")
-    if metadata.canonical_history:
+    if metadata.canonical_history or metadata.compressed:
         raise CanonicalHistoryError()
     return create_snapshot(rollout_path, _session_directory(session_id), suffix=".rollout.jsonl")
 
@@ -93,7 +93,12 @@ def restore_session_backup(
         before = rollout_path.read_bytes()
         if before == data:
             return backup_path
-        if current_metadata.canonical_history or snapshot_metadata.canonical_history:
+        if (
+            current_metadata.canonical_history
+            or current_metadata.compressed
+            or snapshot_metadata.canonical_history
+            or snapshot_metadata.compressed
+        ):
             raise CanonicalHistoryError()
         create_session_backup(session_id, rollout_path)
         if backup_path.parent == legacy.resolve():

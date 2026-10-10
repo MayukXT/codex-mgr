@@ -34,6 +34,20 @@ class _RequestError(Exception):
         self.status = status
 
 
+async def _bounded(awaitable, timeout):
+    """Bound owned I/O without swallowing cancellation on Python 3.10."""
+    pending = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait((pending,), timeout=timeout)
+        if not done:
+            raise asyncio.TimeoutError
+        return pending.result()
+    finally:
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 class AdapterRuntime:
     """Own one loop, listener, HTTP client and bounded set of request tasks.
 
@@ -244,7 +258,7 @@ class AdapterRuntime:
 
     async def _write(self, writer, data):
         writer.write(data)
-        await asyncio.wait_for(writer.drain(), self._request_timeout)
+        await _bounded(writer.drain(), self._request_timeout)
 
     async def _json(self, writer, status, body):
         data = encoded_json(body).encode()
@@ -253,7 +267,7 @@ class AdapterRuntime:
 
     async def _request(self, reader):
         try:
-            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), self._request_timeout)
+            raw = await _bounded(reader.readuntil(b"\r\n\r\n"), self._request_timeout)
         except (
             asyncio.LimitOverrunError,
             asyncio.IncompleteReadError,
@@ -299,7 +313,7 @@ class AdapterRuntime:
         if not 0 < size <= _MAX_BODY:
             raise _RequestError(413)
         try:
-            body = await asyncio.wait_for(reader.readexactly(size), self._request_timeout)
+            body = await _bounded(reader.readexactly(size), self._request_timeout)
             request = object_json(body.decode("utf-8"))
             return adapt_request(
                 request,
@@ -428,6 +442,6 @@ class AdapterRuntime:
                 await cleanup
                 raise
             try:
-                await asyncio.wait_for(writer.wait_closed(), self._request_timeout)
+                await _bounded(writer.wait_closed(), self._request_timeout)
             except (OSError, asyncio.TimeoutError):
                 pass

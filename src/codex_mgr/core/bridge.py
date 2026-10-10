@@ -177,6 +177,10 @@ def prepare_bridge(
         raise BridgeError("Choose a valid Codex connection identifier.")
     rollout = rollout_path.resolve()
     meta = read_session_metadata(rollout)
+    if meta.compressed:
+        raise BridgeError(
+            "This session is compressed. File conversion requires its canonical store workflow."
+        )
     with session_write_guard(meta.id, rollout):
         current = read_session_metadata(rollout)
         if current != meta:

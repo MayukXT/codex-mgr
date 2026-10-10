@@ -6,6 +6,7 @@ import sys
 
 import pytest
 import tomlkit
+import zstandard
 from test_adapter_runtime import synthetic_loopback_http, upstream  # noqa: F401 -- shared fixture
 from test_streaming_codecs import block, chat, delta, finish, start, stop, wire
 
@@ -19,6 +20,7 @@ from codex_mgr.core.backup import (
 )
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
+from codex_mgr.core.sessions import find_session_by_id_or_title
 from codex_mgr.utils.files import create_snapshot
 from codex_mgr.utils.paths import find_codex_binary, get_backups_dir, get_codex_home
 from codex_mgr.utils.processes import OwnedBackgroundProcess
@@ -48,7 +50,17 @@ def test_native_canonical_history_rejects_file_only_mutations(tmp_path, monkeypa
                 get_backups_dir() / "sessions" / identity,
                 suffix=".rollout.jsonl",
             )
+            compressed = rollout.with_suffix(".jsonl.zst")
+            compressed.write_bytes(
+                zstandard.ZstdCompressor(write_checksum=True).compress(rollout.read_bytes())
+            )
+            rollout.unlink()
+            original_compressed = compressed.read_bytes()
+            discovered = find_session_by_id_or_title(identity)
+            assert discovered.require_rollout() == compressed
+            assert compressed.read_bytes() == original_compressed and not rollout.exists()
             launch(tmp_path, runtime, session=identity, reasoning=True)
+            assert rollout.exists() and not compressed.exists()
             before_restore = rollout.read_bytes()
             with pytest.raises(ValueError, match="canonical store"):
                 create_session_backup(identity, rollout)

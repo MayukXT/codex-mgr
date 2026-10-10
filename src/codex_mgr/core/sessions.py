@@ -117,7 +117,9 @@ def discover_sessions(*, include_archived: bool = False) -> SessionCatalog:
     for root, archived in roots:
         if not root.exists():
             continue
-        for candidate in root.rglob("rollout-*.jsonl"):
+        for candidate in root.rglob("rollout-*.jsonl*"):
+            if not candidate.name.endswith((".jsonl", ".jsonl.zst")):
+                continue
             path = candidate.resolve()
             if path in seen_paths:
                 continue

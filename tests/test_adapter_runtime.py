@@ -331,6 +331,55 @@ def test_capacity_bound_and_request_header_timeout_release_owned_tasks(monkeypat
         assert len(runtime._tasks) <= 1
 
 
+@pytest.mark.parametrize("boundary", ["headers", "body", "drain"])
+def test_owner_cancellation_survives_an_io_operation_completing_in_the_same_turn(boundary):
+    provider = ProviderConfig(
+        id="synthetic",
+        name="Synthetic",
+        base_url="http://127.0.0.1:1/v1",
+        wire_api="chat",
+        auth_type="none",
+    )
+    runtime = AdapterRuntime(provider)
+    runtime._base_url = "http://127.0.0.1:1/v1"
+    body = json.dumps(payload(stream=False)).encode()
+
+    async def exercise():
+        owner = asyncio.current_task()
+
+        class Reader:
+            async def readuntil(self, _):
+                if boundary == "headers":
+                    owner.cancel()
+                return (
+                    "POST /v1/responses HTTP/1.1\r\n"
+                    "Host: 127.0.0.1:1\r\n"
+                    f"Authorization: Bearer {runtime._token}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n\r\n"
+                ).encode()
+
+            async def readexactly(self, _):
+                if boundary == "body":
+                    owner.cancel()
+                return body
+
+        class Writer:
+            def write(self, _):
+                pass
+
+            async def drain(self):
+                owner.cancel()
+
+        if boundary == "drain":
+            await runtime._write(Writer(), b"synthetic")
+        else:
+            await runtime._request(Reader())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(exercise())
+
+
 def test_legacy_asyncio_timeout_class_is_handled_without_builtin_alias(monkeypatch):
     class LegacyTimeout(Exception):
         pass
@@ -344,7 +393,7 @@ def test_legacy_asyncio_timeout_class_is_handled_without_builtin_alias(monkeypat
             return b""
 
     monkeypatch.setattr(asyncio, "TimeoutError", LegacyTimeout)
-    monkeypatch.setattr(asyncio, "wait_for", timed_out)
+    monkeypatch.setattr(runtime_module, "_bounded", timed_out)
     provider = ProviderConfig(
         id="synthetic",
         name="Synthetic",

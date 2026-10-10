@@ -140,7 +140,7 @@ def test_canonical_restore_entrypoints_explain_the_store_requirement(entrypoint,
             )
             monkeypatch.setattr(dashboard.inquirer, "text", lambda **_: Mock(execute=lambda: ""))
             dashboard._handle_revert_session()
-    assert "canonical store workflow" in captured.get()
+    assert "canonical store workflow" in " ".join(captured.get().split())
     assert rollout.read_bytes() == before and list_session_backups(SID) == [snapshot]
 
 

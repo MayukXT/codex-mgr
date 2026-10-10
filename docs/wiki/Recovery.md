@@ -42,9 +42,9 @@ cmgr sessions --workspace . --include-archived
 cmgr sessions --limit 20 --offset 20 --json
 ```
 
-The local catalog reads session titles from `session_index.jsonl` and complete UUIDs from rollout metadata. It also discovers unindexed JSONL rollouts. Archived files are included when requested. Workspace filters match the original working directory exactly.
+The local catalog reads session titles from `session_index.jsonl` and complete UUIDs from plain or compressed rollout metadata. It also discovers unindexed JSONL and `.jsonl.zst` rollouts. Compressed headers are read within fixed limits without decompressing files onto disk. Archived files are included when requested. Workspace filters match the original working directory exactly.
 
-There is no fixed history cutoff. Missing files and duplicate UUID files are identified in the listing. Resolve duplicate files before resuming or restoring; a title or prefix that matches several sessions requires a complete UUID. Compressed rollouts and hosted sessions are outside this offline catalog.
+There is no fixed history cutoff. Missing files and duplicate UUID files are identified in the listing. Resolve duplicate files before resuming or restoring; a title or prefix that matches several sessions requires a complete UUID. Hosted sessions are outside this offline catalog. Header discovery establishes identity, not integrity of the entire history.
 
 These commands print local session metadata. JSON output includes titles, UUIDs, timestamps and absolute working-directory paths. Use filters or page bounds for a narrower result and review the output before sharing it.
 
@@ -73,7 +73,7 @@ cmgr restore <session-uuid> --snapshot <listed-filename>
 
 Restore verifies snapshot integrity and identity, then saves current content in a new snapshot before replacement. Legacy backups stored under a 12-character UUID suffix are listed only when their metadata matches the complete UUID. Restoring a legacy copy also creates a checksummed copy in the full UUID directory and retains the legacy original. Corrupt, truncated or mismatched snapshots are rejected.
 
-File backup and restore apply to legacy JSONL sessions. Paginated or inherited sessions require a canonical store workflow that includes their indexes and inherited history; replacing one transcript could leave that store inconsistent. The manager refuses those file-only operations before changing the session. An identical snapshot is a no-op.
+File backup and restore apply to plain legacy JSONL sessions. Paginated, inherited or compressed sessions require a canonical store workflow; replacing one transcript could leave that store inconsistent. The manager refuses those file-only operations before changing the session. An identical snapshot is a no-op. Use Codex directly to resume compressed history until managed canonical handling is available.
 
 Backups can contain prompts, source code, tool output, configuration, and credentials; keep them private. Checksums detect corruption and do not authenticate a snapshot against deliberate replacement of both the file and checksum.
 
