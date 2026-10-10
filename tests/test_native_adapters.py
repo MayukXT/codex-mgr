@@ -22,6 +22,7 @@ from codex_mgr.core.backup import (
 )
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
+from codex_mgr.core.history_stream import iter_history_records
 from codex_mgr.core.rollouts import read_session_metadata
 from codex_mgr.core.rpc import CodexReader
 from codex_mgr.core.sessions import find_session_by_id_or_title
@@ -56,11 +57,13 @@ def test_native_canonical_history_rejects_file_only_mutations(tmp_path, monkeypa
                 suffix=".rollout.jsonl",
             )
             compressed = rollout.with_suffix(".jsonl.zst")
+            raw_rollout = rollout.read_bytes()
             compressed.write_bytes(
-                zstandard.ZstdCompressor(write_checksum=True).compress(rollout.read_bytes())
+                zstandard.ZstdCompressor(write_checksum=True).compress(raw_rollout)
             )
             rollout.unlink()
             original_compressed = compressed.read_bytes()
+            assert list(iter_history_records(compressed)) == raw_rollout.splitlines(keepends=True)
             discovered = find_session_by_id_or_title(identity)
             assert discovered.require_rollout() == compressed
             assert compressed.read_bytes() == original_compressed and not rollout.exists()
