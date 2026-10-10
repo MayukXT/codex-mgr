@@ -53,7 +53,8 @@ class _Source:
 
 
 @contextmanager
-def _regular_source(path):
+def open_history_source(path):
+    """Open an owned regular descriptor without following POSIX file links."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -147,7 +148,7 @@ def iter_history_records(path: Path, *, limits: HistoryLimits | None = None) -> 
     it when abandoning a read. JSON/ordinal/lineage validation is a separate step.
     """
     limits = limits or HistoryLimits()
-    with _regular_source(path) as handle:
+    with open_history_source(path) as handle:
         if not path.name.endswith(".jsonl.zst"):
             total = 0
             budget = min(limits.decoded_bytes, limits.source_bytes)

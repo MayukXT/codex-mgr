@@ -151,7 +151,7 @@ class HistoryLineage:
                     if segment.end is not None and offset > segment.end.byte_offset:
                         raise LineageError("Inherited history cutoff does not align with a record.")
                     if raw.strip():
-                        record = _record(raw)
+                        record = validate_history_record(raw)
                         if record["type"] == "session_meta":
                             raise LineageError("Multiple history metadata records are ambiguous.")
                         if _u64(record.get("ordinal")) != expected:
@@ -168,7 +168,8 @@ def _u64(value):
     return value
 
 
-def _record(raw):
+def validate_history_record(raw):
+    """Validate a finite, duplicate-free supported rollout envelope."""
     try:
         record = JsonEdits(raw.decode("utf-8")).value
     except (ValueError, UnicodeDecodeError, RecursionError) as exc:
@@ -191,7 +192,7 @@ def _header(records):
             raise LineageError("History metadata is missing or too large.")
         prefix.extend(raw)
         if raw.strip():
-            record = _record(raw)
+            record = validate_history_record(raw)
             if record["type"] != "session_meta":
                 raise LineageError("History must begin with session metadata.")
             return bytes(prefix), record, count
@@ -215,7 +216,7 @@ def _safe_path(path, home):
     return path
 
 
-def _rollout_index(home, limit):
+def index_history_rollouts(home, limit):
     """Bound traversal and skip directory/file links rather than following them."""
     index = {}
     stack = []
@@ -301,7 +302,7 @@ def resolve_history_lineage(
             return HistoryLineage(home, tuple(reversed(segments)), limits)
         if index is None:
             try:
-                index = _rollout_index(home, limits.directory_entries)
+                index = index_history_rollouts(home, limits.directory_entries)
             except OSError as exc:
                 raise LineageError("History lookup failed in managed storage.") from exc
         candidates = index.get(position.rollout_id, [])

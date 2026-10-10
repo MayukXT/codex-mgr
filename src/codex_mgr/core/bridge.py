@@ -70,7 +70,10 @@ def _sanitize_item(
     return 0
 
 
-def _sanitize_record(editor: JsonEdits, preserve_reasoning=None, *, reasoning_only=False) -> int:
+def sanitize_history_record(
+    editor: JsonEdits, preserve_reasoning=None, *, reasoning_only=False
+) -> int:
+    """Edit recognized opaque provider data while preserving other JSON spans."""
     record = editor.value
     payload = record.get("payload")
     kind = record.get("type")
@@ -234,7 +237,7 @@ def prepare_bridge(
                         or meta.provider != target_provider_id
                         or preserve_reasoning is not None
                     ):
-                        count += _sanitize_record(
+                        count += sanitize_history_record(
                             editor,
                             None if strip_reasoning else preserve_reasoning,
                             reasoning_only=not strip_reasoning

@@ -22,6 +22,11 @@ from codex_mgr.core.backup import (
 )
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
+from codex_mgr.core.history_copy import (
+    prepare_history_copy,
+    read_history_copy,
+    recover_history_copy,
+)
 from codex_mgr.core.history_lineage import resolve_history_lineage
 from codex_mgr.core.history_stream import iter_history_records
 from codex_mgr.core.rollouts import read_session_metadata
@@ -152,6 +157,64 @@ def test_native_independent_materialized_history_preserves_source_and_resumes(
         )
 
 
+def test_native_canonical_cross_protocol_copy_keeps_readable_context_and_originals(
+    tmp_path, monkeypatch
+):
+    from test_continuations import thinking_stream
+
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream("messages", responder=lambda _: wire(thinking_stream(), "messages")[0]) as (
+        provider,
+        _,
+        _,
+    ):
+        provider.reasoning_budget = 1024
+        with AdapterRuntime(provider) as runtime:
+            original_id = launch(tmp_path, runtime, reasoning=True)[0]["thread_id"]
+            source = find_session_by_id_or_title(original_id).require_rollout()
+            # The signed fixture has no public summary. Add an explicit synthetic
+            # readable summary to exercise native replay without decrypting thinking.
+            records = source.read_bytes().splitlines(keepends=True)
+            summary = "  Exact readable summary 🌙\n"
+            for index, raw in enumerate(records):
+                editor = JsonEdits(raw.decode())
+                if (
+                    editor.value["type"] == "response_item"
+                    and editor.value["payload"].get("type") == "reasoning"
+                ):
+                    editor.set(("payload", "summary"), [{"type": "summary_text", "text": summary}])
+                    records[index] = editor.render().encode()
+                    break
+            else:
+                pytest.fail("Synthetic native reasoning item was not persisted.")
+            source.write_bytes(b"".join(records))
+            original = source.read_bytes()
+    with upstream("chat") as (provider, received, _), AdapterRuntime(provider) as runtime:
+        with prepare_history_copy(
+            source, "fixture", preserve_reasoning=runtime.reasoning_compatible
+        ) as prepared:
+            assert prepared.sanitized_count == 2
+            with pytest.raises(BridgeError, match="consent"):
+                prepared.publish()
+            imported_id = prepared.id
+            prepared.publish(allow_reasoning_loss=True)
+        assert source.read_bytes() == original
+        resumed = launch(tmp_path, runtime, session=imported_id)
+        assert resumed[0]["thread_id"] == imported_id
+        assert source.read_bytes() == original
+        prior = [item for item in received[-1][2]["messages"] if item["role"] == "assistant"]
+        texts = [
+            part["text"]
+            for message in prior
+            for part in message["content"]
+            if part["type"] == "text"
+        ]
+        assert summary in texts and "Exact response." in texts
+        info = read_history_copy(imported_id)
+        assert info.original_id == original_id and info.sanitized_count == 2
+        assert recover_history_copy(imported_id).state == "published"
+
+
 @pytest.mark.parametrize(
     "representation", ["plain", "compressed-archive", "compacted-compressed-archive"]
 )
@@ -224,6 +287,10 @@ def test_native_nested_lineage_materializes_frozen_prefixes_and_resumes(
                 ),
             ):
                 pytest.fail("An active native ancestor must prevent coordinated publication.")
+            with prepare_history_copy(root, "fixture") as prepared:
+                with pytest.raises(FileConflictError):
+                    prepared.publish()
+                assert not prepared.target.exists()
         if representation.endswith("compressed-archive"):
             for index, segment in enumerate(lineage.segments[:-1]):
                 source = segment.path
@@ -246,20 +313,19 @@ def test_native_nested_lineage_materializes_frozen_prefixes_and_resumes(
         ):
             assert lineage.fingerprint() == expected
             records = list(lineage.iter_records())
-        metadata = JsonEdits(records[0].decode())
-        imported_id = str(uuid4())
-        metadata.set(("payload", "id"), imported_id)
-        metadata.set(("payload", "history_mode"), "legacy")
-        metadata.set(("payload", "history_base"), None)
-        metadata.set(("payload", "forked_from_id"), root_id)
-        metadata.set(("payload", "forked_from_ordinal_exclusive"), None)
-        imported = root.with_name(root.name.replace(root_id, imported_id))
-        imported_bytes = metadata.render().encode() + b"".join(records[1:])
-        imported.write_bytes(imported_bytes)
+        with prepare_history_copy(root, "fixture") as prepared:
+            assert prepared.expected_fingerprint == expected
+            imported_id = prepared.id
+            imported_bytes = prepared.candidate.read_bytes()
+            assert imported_bytes.split(b"\n", 1)[1] == b"".join(records[1:])
+            imported = prepared.publish()
+        assert read_history_copy(imported_id).state == "published"
         resumed = launch(tmp_path, runtime, session=imported_id)
         assert resumed[0]["thread_id"] == imported_id
         assert {path: path.read_bytes() for path in originals} == originals
         assert imported.read_bytes().startswith(imported_bytes)
+        assert recover_history_copy(imported_id).target == imported
+        assert read_history_copy(imported_id).state == "published"
         prior = [
             message for message in received[-1][2]["messages"] if message["role"] == "assistant"
         ]
