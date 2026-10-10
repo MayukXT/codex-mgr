@@ -54,6 +54,21 @@ def connection_scope(protocol, endpoint, headers):
     return hashlib.sha256(encoded_json(document).encode("utf-8")).digest()
 
 
+def messages_connection_scope(provider, headers):
+    """A manager version change must not invalidate an unchanged upstream identity."""
+    custom_names = {
+        name.lower()
+        for values in (provider.http_headers, provider.env_http_headers)
+        for name in (values or {})
+    }
+    scoped_headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() != "user-agent" or "user-agent" in custom_names
+    }
+    return connection_scope("messages", provider.base_url + "/messages", scoped_headers)
+
+
 def load_continuation_key(create):
     """Keep a checksummed home key; never repair existing storage implicitly."""
     root = get_codex_home()

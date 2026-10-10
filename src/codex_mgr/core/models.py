@@ -109,7 +109,7 @@ def sync_models_from_local_cache(
 
 def provider_headers(provider: ProviderConfig) -> dict[str, str]:
     headers = {"User-Agent": f"codex-mgr/{__version__}"}
-    token = resolve_credential(provider.auth_token)
+    token = resolve_credential(provider.auth_token) if provider.auth_type != "none" else None
     if token:
         if provider.wire_api == "anthropic_proxy":
             headers["x-api-key"] = token
@@ -117,11 +117,23 @@ def provider_headers(provider: ProviderConfig) -> dict[str, str]:
             headers["Authorization"] = f"Bearer {token}"
     if provider.wire_api == "anthropic_proxy":
         headers["anthropic-version"] = "2023-06-01"
-    headers.update(provider.http_headers or {})
+
+    def put(name, value):
+        for existing in list(headers):
+            if existing.lower() == name.lower():
+                del headers[existing]
+        headers[name] = value
+
+    for values in (provider.http_headers, provider.env_http_headers):
+        names = [name.lower() for name in (values or {})]
+        if len(names) != len(set(names)):
+            raise CredentialError("Configured header names are ambiguous.")
+    for header, value in (provider.http_headers or {}).items():
+        put(header, value)
     for header, variable in (provider.env_http_headers or {}).items():
         value = resolve_credential("$" + variable)
         if value:
-            headers[header] = value
+            put(header, value)
     return headers
 
 

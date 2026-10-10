@@ -12,6 +12,8 @@ from test_streaming_codecs import block, chat, delta, finish, start, stop, wire
 from codex_mgr.config.schema import ModelInfo, ProviderConfig
 from codex_mgr.core.adapters.launch import AdapterLaunch, adapter_connection_id
 from codex_mgr.core.adapters.runtime import AdapterRuntime
+from codex_mgr.core.backup import list_session_backups
+from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
 from codex_mgr.utils.paths import find_codex_binary, get_codex_home
 from codex_mgr.utils.processes import OwnedBackgroundProcess
@@ -20,6 +22,32 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("CMGR_NATIVE_CONTRACTS") != "1",
     reason="Set CMGR_NATIVE_CONTRACTS=1 with Codex 0.159.0 installed.",
 )
+
+
+def test_native_canonical_history_rejects_file_only_reasoning_conversion(tmp_path, monkeypatch):
+    from test_continuations import thinking_stream
+
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream("messages", responder=lambda _: wire(thinking_stream(), "messages")[0]) as (
+        provider,
+        _,
+        _,
+    ):
+        provider.reasoning_budget = 1024
+        with AdapterRuntime(provider) as runtime:
+            first = launch(tmp_path, runtime, reasoning=True)
+    identity = first[0]["thread_id"]
+    rollout = next((get_codex_home() / "sessions").rglob("*.jsonl"))
+    original = rollout.read_bytes()
+    with upstream("chat") as (provider, received, _), AdapterRuntime(provider) as runtime:
+        with (
+            pytest.raises(BridgeError, match="canonical"),
+            prepare_bridge(rollout, "fixture", preserve_reasoning=runtime.reasoning_compatible),
+        ):
+            pytest.fail("Canonical native history cannot be converted by replacing its file.")
+        assert rollout.read_bytes() == original and not list_session_backups(identity)
+        assert not received
+
 
 _NATIVE_RUNNER = """
 import json,subprocess,sys

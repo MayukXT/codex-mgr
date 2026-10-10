@@ -130,10 +130,32 @@ def _history(items, protocol, registry, continuations, model):
             raise ProtocolError("Invalid Responses history item.")
         kind = item.get("type", "message")
         if kind == "reasoning":
-            if protocol != "messages" or continuations is None or pending:
-                raise ProtocolError("Reasoning history needs a compatible bound continuation.")
-            block = continuations.open(item.get("encrypted_content"), model)
-            _append(messages, "assistant", [block], protocol=protocol)
+            if pending:
+                raise ProtocolError("Tool calls need matching results before reasoning history.")
+            if item.get("encrypted_content") is not None:
+                if protocol != "messages" or continuations is None:
+                    raise ProtocolError("Reasoning history needs a compatible bound continuation.")
+                block = continuations.open(item["encrypted_content"], model)
+                _append(messages, "assistant", [block], protocol=protocol)
+            else:
+                summary = item.get("summary")
+                if (
+                    not isinstance(summary, list)
+                    or item.get("content")
+                    or item.get("status") not in {None, "completed"}
+                ):
+                    raise ProtocolError("This readable reasoning history has no verified mapping.")
+                content = []
+                for part in summary:
+                    if (
+                        not isinstance(part, dict)
+                        or set(part) != {"type", "text"}
+                        or part["type"] != "summary_text"
+                    ):
+                        raise ProtocolError("Invalid readable reasoning summary.")
+                    content.append({"type": "text", "text": text(part["text"])})
+                if content:
+                    _append(messages, "assistant", content, protocol=protocol)
         elif kind == "message":
             role = item.get("role")
             if role not in {"system", "developer", "user", "assistant"}:

@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,20 +29,28 @@ def inspect_session_provider(rollout_path: Path) -> str | None:
         return None
 
 
-def _sanitize_item(editor: JsonEdits, item: object, path: tuple) -> int:
+def _sanitize_item(
+    editor: JsonEdits, item: object, path: tuple, preserve_reasoning=None, *, reasoning_only=False
+) -> int:
     if not isinstance(item, dict) or not isinstance(item.get("type"), str):
         raise BridgeError("History has an invalid response item.")
     kind = item["type"]
     encrypted = item.get("encrypted_content")
-    if kind in {"compaction", "compaction_summary", "context_compaction"} and encrypted:
+    if kind in {"compaction", "compaction_summary", "context_compaction"} and encrypted is not None:
         raise BridgeError(
             "This history contains encrypted compaction. Resume it with its original connection; a cross-provider conversion cannot reconstruct that context."
         )
     if kind == "reasoning":
         if not isinstance(item.get("summary"), list):
             raise BridgeError("History has an invalid reasoning summary.")
+        if encrypted is not None and not isinstance(encrypted, str):
+            raise BridgeError("History has an invalid encrypted reasoning value.")
+        if encrypted is not None and preserve_reasoning is not None and preserve_reasoning(item):
+            return 0
+        if reasoning_only and encrypted is None:
+            return 0
         count = 0
-        if encrypted:
+        if encrypted is not None:
             editor.set((*path, "encrypted_content"), None)
             count = 1
         if item.get("id") is not None:
@@ -62,16 +70,22 @@ def _sanitize_item(editor: JsonEdits, item: object, path: tuple) -> int:
     return 0
 
 
-def _sanitize_record(editor: JsonEdits) -> int:
+def _sanitize_record(editor: JsonEdits, preserve_reasoning=None, *, reasoning_only=False) -> int:
     record = editor.value
     payload = record.get("payload")
     kind = record.get("type")
     if kind == "response_item":
-        return _sanitize_item(editor, payload, ("payload",))
+        return _sanitize_item(
+            editor, payload, ("payload",), preserve_reasoning, reasoning_only=reasoning_only
+        )
     if kind == "inter_agent_communication":
         if not isinstance(payload, dict):
             raise BridgeError("History has an invalid inter-agent record.")
         if payload.get("encrypted_content"):
+            if reasoning_only:
+                raise BridgeError(
+                    "This destination check cannot authenticate encrypted inter-agent communication."
+                )
             if not isinstance(payload.get("content"), str) or not payload["content"]:
                 raise BridgeError(
                     "This history contains encrypted inter-agent communication without readable content."
@@ -99,7 +113,13 @@ def _sanitize_record(editor: JsonEdits) -> int:
             if not isinstance(items, list):
                 raise BridgeError("History has an invalid nested checkpoint.")
             for index, item in enumerate(items):
-                count += _sanitize_item(editor, item, ("payload", key, index))
+                count += _sanitize_item(
+                    editor,
+                    item,
+                    ("payload", key, index),
+                    preserve_reasoning,
+                    reasoning_only=reasoning_only,
+                )
         return count
     return 0
 
@@ -141,7 +161,11 @@ class PreparedBridge:
 
 @contextmanager
 def prepare_bridge(
-    rollout_path: Path, target_provider_id: str, *, strip_reasoning: bool = False
+    rollout_path: Path,
+    target_provider_id: str,
+    *,
+    strip_reasoning: bool = False,
+    preserve_reasoning: Callable[[dict], bool] | None = None,
 ) -> Iterator[PreparedBridge]:
     """Validate the entire input and stage edits before activation or replacement.
 
@@ -190,6 +214,7 @@ def prepare_bridge(
                         if (
                             details.provider != target_provider_id
                             or strip_reasoning
+                            or preserve_reasoning is not None
                             or details.from_filename
                         ) and (
                             payload.get("history_base") is not None
@@ -204,8 +229,17 @@ def prepare_bridge(
                         saw_meta = True
                     elif editor.value["type"] == "session_meta":
                         raise BridgeError("Multiple session metadata records are ambiguous.")
-                    elif strip_reasoning or meta.provider != target_provider_id:
-                        count += _sanitize_record(editor)
+                    elif (
+                        strip_reasoning
+                        or meta.provider != target_provider_id
+                        or preserve_reasoning is not None
+                    ):
+                        count += _sanitize_record(
+                            editor,
+                            None if strip_reasoning else preserve_reasoning,
+                            reasoning_only=not strip_reasoning
+                            and meta.provider == target_provider_id,
+                        )
                     if editor.edits:
                         changed += 1
                         target.write(editor.render().encode("utf-8"))

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from codex_mgr.core.adapters.continuations import ContinuationCodec, connection_scope
+from codex_mgr.core.adapters.continuations import ContinuationCodec, messages_connection_scope
 from codex_mgr.core.adapters.requests import adapt_request
 from codex_mgr.core.adapters.responses import adapt_response
 from codex_mgr.core.adapters.sse import encode_event
@@ -118,10 +118,11 @@ class AdapterRuntime:
             raise AdapterError("Invalid upstream headers.") from exc
         self._headers = dict(headers)
         self._continuations = (
-            ContinuationCodec(connection_scope(self._protocol, self._url, self._headers))
+            ContinuationCodec(messages_connection_scope(selected, self._headers))
             if self._protocol == "messages"
             else None
         )
+        self._model = provider.default_model
         self._max_output_tokens = provider.max_output_tokens
         self._thinking_budget = provider.reasoning_budget
         self._upstream_streaming = provider.streaming
@@ -143,6 +144,16 @@ class AdapterRuntime:
         if self._base_url is None or self._thread is None or not self._thread.is_alive():
             raise AdapterError("The owned adapter is not running.")
         return self._base_url
+
+    def reasoning_compatible(self, item):
+        """Check a signed continuation without starting HTTP or modifying storage."""
+        if self._continuations is None or not isinstance(item, dict):
+            return False
+        try:
+            self._continuations.open(item.get("encrypted_content"), self._model)
+            return True
+        except ProtocolError:
+            return False
 
     @property
     def token(self):
