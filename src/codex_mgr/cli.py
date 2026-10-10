@@ -26,7 +26,12 @@ from codex_mgr.core.history_copy import (
     read_history_copy,
     recover_history_copy,
 )
-from codex_mgr.core.models import refresh_provider_models, select_model, test_provider_connectivity
+from codex_mgr.core.models import (
+    refresh_provider_models,
+    save_model_settings,
+    select_model,
+    test_provider_connectivity,
+)
 from codex_mgr.core.profiles import ConfigurationError
 from codex_mgr.core.providers import delete_provider
 from codex_mgr.core.resume import resume_session, start_session
@@ -673,11 +678,10 @@ def _main(argv: list[str] | None = None) -> int:
                 print_error("Model not found.")
                 return 1
             provider.models = [m for m in provider.models if m.id != args.model_id]
-        ok, message = apply_settings(
-            settings,
-            activate_provider_id=provider.id
-            if args.action == "use" and provider.id == settings.active_provider_id
-            else None,
+        ok, message = (
+            save_model_settings(settings, provider.id)
+            if args.action == "use"
+            else apply_settings(settings)
         )
         (print_success if ok else print_error)(message)
         return 0 if ok else 1

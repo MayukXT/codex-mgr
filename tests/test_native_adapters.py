@@ -606,6 +606,8 @@ def test_native_verified_launch_overrides_preserve_original_configuration(
 def test_native_shared_fresh_adapter_start_retains_upstream_selection(
     protocol, tmp_path, monkeypatch
 ):
+    from codex_mgr.core.models import save_model_settings
+
     monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
     home = get_codex_home()
     home.mkdir()
@@ -665,8 +667,17 @@ def test_native_shared_fresh_adapter_start_retains_upstream_selection(
             assert saved.active_provider_id == provider.id
             assert saved.providers[provider.id].model_dump() == provider.model_dump()
             assert "CMGR_ADAPTER_TOKEN_" not in (home / "cmgr.json").read_text(encoding="utf-8")
+            if selected is not None:
+                provider.max_output_tokens = 4096
+                saved.providers[provider.id].max_output_tokens = 4096
+                assert save_model_settings(saved, provider.id)[0]
+                assert config.read_bytes() == original
         assert len(set(completed)) == len(received) == 2
         assert all(request[2]["model"] == provider.default_model for request in received)
+        assert (
+            received[-1][2]["max_tokens" if protocol == "messages" else "max_completion_tokens"]
+            == 4096
+        )
         rollouts = list((home / "sessions").rglob("*.jsonl"))
         assert len(rollouts) == 2
         for path in rollouts:

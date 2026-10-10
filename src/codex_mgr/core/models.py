@@ -331,6 +331,34 @@ def select_model(provider, model_id):
     return model
 
 
+def save_model_settings(settings, provider_id):
+    """Save a reviewed model choice without persisting temporary adapter routing."""
+    from pydantic import ValidationError
+
+    from codex_mgr.core.activation import apply_settings
+    from codex_mgr.core.adapters.launch import AdapterLaunch
+    from codex_mgr.core.profiles import ConfigurationError
+
+    provider = settings.providers.get(provider_id)
+    if provider is None:
+        return False, "Connection not found."
+    if provider.wire_api in {"chat", "anthropic_proxy"}:
+        try:
+            AdapterLaunch(provider)  # Pure control validation; no owner, RPC or launch.
+        except ConfigurationError as exc:
+            return False, str(exc)
+        except (ValidationError, OSError, ValueError, RuntimeError):
+            return False, "Model settings are invalid. Check the selected controls."
+        ok, message = apply_settings(settings)
+        if ok:
+            message = "Model settings saved. Start Codex through cmgr to use them."
+        return ok, message
+    return apply_settings(
+        settings,
+        activate_provider_id=provider_id if provider_id == settings.active_provider_id else None,
+    )
+
+
 def test_provider_connectivity(provider):
     if provider.auth_type == "official_oauth":
         return verify_openai_connectivity()

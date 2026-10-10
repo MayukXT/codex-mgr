@@ -220,8 +220,8 @@ def test_reasoning_menu_can_restore_default_and_cancel_without_mutating_saved_st
     saved = []
     monkeypatch.setattr(
         advanced_controls,
-        "apply_settings",
-        lambda candidate, **kwargs: (
+        "save_model_settings",
+        lambda candidate, provider_id: (
             saved.append(candidate.model_copy(deep=True)) is None,
             "Saved",
         ),
@@ -246,8 +246,8 @@ def test_stale_reasoning_menu_allows_explicit_provider_value(monkeypatch):
     saved = []
     monkeypatch.setattr(
         advanced_controls,
-        "apply_settings",
-        lambda candidate, **kwargs: (
+        "save_model_settings",
+        lambda candidate, provider_id: (
             saved.append(candidate.model_copy(deep=True)) is None,
             "Saved",
         ),

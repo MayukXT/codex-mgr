@@ -5,7 +5,12 @@ from InquirerPy.base.control import Choice
 
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import apply_settings
-from codex_mgr.core.models import catalog_is_fresh, model_metadata, refresh_provider_models
+from codex_mgr.core.models import (
+    catalog_is_fresh,
+    model_metadata,
+    refresh_provider_models,
+    save_model_settings,
+)
 from codex_mgr.tui.provider_wizard import choose_model
 from codex_mgr.utils.display import console, print_error, print_success, print_warning, select_menu
 
@@ -72,10 +77,9 @@ def manage_provider_models(provider_id):
                 print_warning("Choose another default before removing this model.")
                 continue
             provider.models = [m for m in provider.models if m.id != selected]
-        ok, message = apply_settings(
-            settings,
-            activate_provider_id=provider_id
-            if settings.active_provider_id == provider_id and action == "select"
-            else None,
+        ok, message = (
+            save_model_settings(settings, provider_id)
+            if action == "select"
+            else apply_settings(settings)
         )
         (print_success if ok else print_error)(message)
