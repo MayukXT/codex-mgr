@@ -60,7 +60,7 @@ codex-mgr = "codex_mgr.cli:main"
 packages = ["src/codex_mgr"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/", "tests/", "docs/wiki/", "scripts/", "README.md", "FORDEV.md", "LICENSE", "pyproject.toml"]
+include = ["src/", "tests/", "docs/wiki/", "scripts/check_distribution.py", ".github/workflows/ci.yml", "README.md", "FORDEV.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

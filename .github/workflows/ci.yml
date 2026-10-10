@@ -1,0 +1,62 @@
+name: Tests and distributions
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test and build dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run isolated regression suite
+        run: python -m pytest tests -q
+      - name: Build wheel and source archive
+        run: python -m build --outdir dist
+      - name: Verify archives and clean installations
+        shell: bash
+        run: python scripts/check_distribution.py --install-smoke dist/*.whl dist/*.tar.gz
+
+  native-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      CMGR_NATIVE_CONTRACTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install pinned native Codex and test dependencies
+        run: |
+          npm install --global @openai/codex@0.159.0
+          python -m pip install -e ".[dev]"
+      - name: Run temporary-home native configuration and session contracts
+        run: python -m pytest tests/test_native_codex.py -q

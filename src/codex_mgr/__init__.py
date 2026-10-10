@@ -1,6 +1,6 @@
 """Codex Manager (codex-mgr / cmgr).
 
-Universal multi-provider manager and reasoning-blob session bridge for OpenAI Codex CLI.
+Provider configuration, model selection and session recovery for Codex CLI.
 """
 
 __version__ = "1.0.0"

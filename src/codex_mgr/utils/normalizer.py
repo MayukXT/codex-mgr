@@ -70,7 +70,7 @@ def mask_api_key(key: str) -> str:
     """Mask an API key for safe public UI rendering.
 
     Never exposes full tokens in terminal output or logs.
-    Example: 'sk-43LDpfHe93CCWv4u5dhjeLFU' -> 'sk-...eLFU'
+    Example: 'synthetic-example-key' -> '[set]'
     """
     if not key:
         return "[none]"
