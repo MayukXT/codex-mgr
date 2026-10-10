@@ -121,6 +121,7 @@ def test_missing_selected_variable_prevents_network(monkeypatch):
 def test_catalog_freshness_changes_with_credential_rotation(monkeypatch):
     monkeypatch.setenv("SELECTED_KEY", "synthetic-first")
     item = provider(auth_token="$SELECTED_KEY")
+    item.catalog_source = "provider:/models"
     item.catalog_scope = models.catalog_scope(item)
     item.catalog_fetched_at = datetime.now(timezone.utc).isoformat()
     assert models.catalog_is_fresh(item)

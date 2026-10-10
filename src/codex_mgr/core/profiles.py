@@ -10,6 +10,7 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from codex_mgr.config.schema import ProviderConfig
+from codex_mgr.core.models import model_metadata
 from codex_mgr.utils.files import atomic_write, create_snapshot, read_optional
 from codex_mgr.utils.paths import get_backups_dir, get_config_toml_path
 
@@ -98,7 +99,7 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
         target = doc["profiles"][profile]
     target["model"] = provider.default_model
     effort = provider.reasoning_effort if provider.reasoning_enabled else "none"
-    model = next((m for m in provider.models if m.id == provider.default_model), None)
+    model = model_metadata(provider, provider.default_model)
     if (
         model
         and model.supported_reasoning_levels

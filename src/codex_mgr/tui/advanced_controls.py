@@ -8,6 +8,7 @@ from rich.markup import escape
 
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import apply_settings
+from codex_mgr.core.models import model_metadata
 from codex_mgr.utils.display import console, print_error, print_success, select_menu
 
 
@@ -58,16 +59,26 @@ def run_advanced_controls(provider_id: str | None = None) -> None:
             except ValueError:
                 print_error("Enter a positive integer or leave blank.")
         elif action == "effort":
-            model = next((m for m in provider.models if m.id == provider.default_model), None)
+            model = model_metadata(provider, provider.default_model)
             levels = model.supported_reasoning_levels if model else []
             if levels:
-                effort = inquirer.select(
-                    message="Reasoning effort",
-                    choices=levels,
+                model_default = object()
+                effort = select_menu(
+                    "Reasoning effort",
+                    [
+                        Choice(model_default, "Model default"),
+                        *[Choice(level, level) for level in levels],
+                        Choice(None, "Back"),
+                    ],
                     default=provider.reasoning_effort
                     if provider.reasoning_effort in levels
-                    else levels[0],
-                ).execute()
+                    else model_default,
+                    allow_back=True,
+                )
+                if effort is None:
+                    continue
+                if effort is model_default:
+                    effort = ""
             else:
                 effort = (
                     inquirer.text(

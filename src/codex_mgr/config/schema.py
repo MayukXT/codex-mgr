@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -29,9 +30,19 @@ class ModelInfo(BaseModel):
     @field_validator("id", "name")
     @classmethod
     def printable(cls, value):
-        if not value.strip() or any(ord(c) < 32 for c in value):
+        if not value.strip() or any(unicodedata.category(c) == "Cc" for c in value):
             raise ValueError("Model identifiers and labels must contain printable text.")
         return value.strip()
+
+    @field_validator("default_reasoning_effort")
+    @classmethod
+    def printable_effort(cls, value):
+        return cls.printable(value) if value is not None else None
+
+    @field_validator("supported_reasoning_levels", "input_modalities")
+    @classmethod
+    def printable_values(cls, values):
+        return list(dict.fromkeys(cls.printable(value) for value in values))
 
 
 class ProviderConfig(BaseModel):

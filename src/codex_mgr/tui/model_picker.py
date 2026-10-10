@@ -5,7 +5,7 @@ from InquirerPy.base.control import Choice
 
 from codex_mgr.config.settings import load_settings
 from codex_mgr.core.activation import apply_settings
-from codex_mgr.core.models import catalog_is_fresh, refresh_provider_models
+from codex_mgr.core.models import catalog_is_fresh, model_metadata, refresh_provider_models
 from codex_mgr.tui.provider_wizard import choose_model
 from codex_mgr.utils.display import console, print_error, print_success, print_warning, select_menu
 
@@ -59,7 +59,7 @@ def manage_provider_models(provider_id):
             ).execute()
             if not selected:
                 continue
-            model = next(m for m in provider.models if m.id == selected)
+            model = model_metadata(provider, selected)
             if action == "details":
                 context = f"{model.context_window:,}" if model.context_window else "Unknown"
                 console.print(

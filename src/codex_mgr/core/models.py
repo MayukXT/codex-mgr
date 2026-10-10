@@ -137,12 +137,22 @@ def catalog_scope(provider):
             credential = json.dumps(provider_headers(provider), sort_keys=True).encode()
         except CredentialError:
             return None
-    return hashlib.sha256(
-        provider.base_url.encode() + provider.wire_api.encode() + credential
-    ).hexdigest()
+    envelope = {
+        "version": __version__,
+        "endpoint": provider.base_url,
+        "protocol": provider.wire_api,
+        "authentication": provider.auth_type,
+        "credentials": hashlib.sha256(credential).hexdigest(),
+    }
+    return hashlib.sha256(json.dumps(envelope, sort_keys=True).encode()).hexdigest()
 
 
 def catalog_is_fresh(provider, ttl=3600):
+    expected_source = (
+        "codex:model/list" if provider.auth_type == "official_oauth" else "provider:/models"
+    )
+    if provider.catalog_source != expected_source:
+        return False
     try:
         stamp = datetime.fromisoformat(provider.catalog_fetched_at)
         age = (datetime.now(timezone.utc) - stamp).total_seconds()
@@ -239,20 +249,42 @@ def discover_models(provider):
 
 
 def refresh_provider_models(provider):
+    before = catalog_scope(provider)
+    routing = (provider.base_url, provider.wire_api, provider.auth_type)
     ok, models, error = discover_models(provider)
     if ok:
-        manual = [m for m in provider.models if m.is_custom and m.id not in {x.id for x in models}]
-        provider.models = models + manual
+        after = catalog_scope(provider)
+        if before != after or routing != (provider.base_url, provider.wire_api, provider.auth_type):
+            return (
+                False,
+                [],
+                "Connection identity changed during discovery. Refresh the catalog again.",
+            )
+        manual = {m.id: m for m in provider.models if m.is_custom}
+        remote_ids = {m.id for m in models}
+        provider.models = [manual.get(m.id, m) for m in models] + [
+            m for identifier, m in manual.items() if identifier not in remote_ids
+        ]
         provider.catalog_source = (
             "codex:model/list" if provider.auth_type == "official_oauth" else "provider:/models"
         )
         provider.catalog_fetched_at = datetime.now(timezone.utc).isoformat()
-        provider.catalog_scope = catalog_scope(provider)
+        provider.catalog_scope = after
     return ok, models, error
 
 
-def select_model(provider, model_id):
+def model_metadata(provider, model_id):
+    """Keep saved labels while withholding stale remote capabilities and defaults."""
     model = next((item for item in provider.models if item.id == model_id), None)
+    if model is None:
+        return None
+    if model.is_custom or catalog_is_fresh(provider):
+        return model
+    return ModelInfo(id=model.id, name=model.name)
+
+
+def select_model(provider, model_id):
+    model = model_metadata(provider, model_id)
     if model is None:
         model = ModelInfo(id=model_id, name=model_id, is_custom=True)
         provider.models.append(model)

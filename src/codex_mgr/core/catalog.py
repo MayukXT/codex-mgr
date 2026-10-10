@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from codex_mgr.core.models import model_metadata
 from codex_mgr.utils.files import atomic_write
 
 
@@ -10,7 +11,8 @@ def catalog_document(provider, *, instructions):
     if not isinstance(instructions, str) or not instructions.strip():
         raise ValueError("Supply an explicit instruction template; Codex catalogs require it.")
     models = []
-    for model in provider.models:
+    for entry in provider.models:
+        model = model_metadata(provider, entry.id)
         models.append(
             {
                 "slug": model.id,
