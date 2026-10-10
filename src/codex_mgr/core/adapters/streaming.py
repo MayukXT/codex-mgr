@@ -10,7 +10,12 @@ from __future__ import annotations
 import time
 from copy import deepcopy
 
-from codex_mgr.core.adapters.responses import adapt_response, identifier, response_usage
+from codex_mgr.core.adapters.responses import (
+    adapt_response,
+    identifier,
+    response_usage,
+    verify_input_transformations,
+)
 from codex_mgr.core.adapters.sse import async_json_events, json_events
 from codex_mgr.core.adapters.tools import ProtocolError, object_json, text
 
@@ -331,8 +336,19 @@ class _Messages:
             message = body.get("message")
             _fields(
                 message,
-                {"id", "type", "role", "model", "content", "stop_reason", "stop_sequence", "usage"},
+                {
+                    "id",
+                    "type",
+                    "role",
+                    "model",
+                    "content",
+                    "stop_reason",
+                    "stop_sequence",
+                    "usage",
+                    "input_transformations",
+                },
             )
+            verify_input_transformations(message.get("input_transformations"))
             if (
                 self.message is not None
                 or message.get("type") != "message"
@@ -436,7 +452,8 @@ class _Messages:
             block["parts"].append(text(delta.get("partial_json")))
             return []
         if kind == "message_delta":
-            _fields(body, {"type", "delta", "usage"})
+            _fields(body, {"type", "delta", "usage", "input_transformations"})
+            verify_input_transformations(body.get("input_transformations"))
             if self.active is not None or self.finish_reason is not None:
                 raise ProtocolError("Invalid upstream message delta order.")
             delta = body.get("delta")

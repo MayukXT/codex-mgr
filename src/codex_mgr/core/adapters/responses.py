@@ -15,6 +15,12 @@ def identifier(prefix):
     return prefix + uuid.uuid4().hex
 
 
+def verify_input_transformations(value):
+    """Refuse reported input changes; never expose provider paths or raw reports."""
+    if value is not None and (not isinstance(value, list) or value):
+        raise ProtocolError("Upstream reported an unsupported change to conversation history.")
+
+
 def _tokens(value):
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ProtocolError("Invalid upstream token usage.")
@@ -138,6 +144,7 @@ def _chat_output(body, adapted):
 
 
 def _messages_output(body, adapted):
+    verify_input_transformations(body.get("input_transformations"))
     if (
         body.get("type") != "message"
         or body.get("role") != "assistant"

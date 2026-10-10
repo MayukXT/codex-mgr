@@ -1,10 +1,12 @@
 """Reasoning envelopes preserve exact blocks and reject wrong identities/keys."""
 
+import asyncio
 import base64
 import os
+from unittest.mock import Mock
 
 import pytest
-from test_protocol_codecs import messages_reply, request
+from test_protocol_codecs import FUNCTION, messages_reply, request
 from test_streaming_codecs import assert_lifecycle, block, finish, start, stop, wire
 
 from codex_mgr.core.adapters.continuations import (
@@ -14,7 +16,7 @@ from codex_mgr.core.adapters.continuations import (
 )
 from codex_mgr.core.adapters.requests import adapt_request
 from codex_mgr.core.adapters.responses import adapt_response
-from codex_mgr.core.adapters.streaming import adapt_stream, buffered_stream
+from codex_mgr.core.adapters.streaming import adapt_stream, async_adapt_stream, buffered_stream
 from codex_mgr.core.adapters.tools import ProtocolError
 from codex_mgr.utils.paths import get_codex_home
 
@@ -185,6 +187,153 @@ def test_streamed_signed_and_redacted_blocks_preserve_order_and_exact_history(ch
     replay = adapted(input=[*output, {"role": "user", "content": "Continue."}])
     assert replay.payload["messages"][0]["content"][:2] == [SIGNED, REDACTED]
     assert SIGNED["thinking"] not in str(events) and SIGNED["signature"] not in str(events)
+
+
+@pytest.mark.parametrize("report", [None, []])
+def test_empty_transformation_reports_preserve_buffered_and_streamed_continuations(report):
+    original = adapted()
+    body = messages_reply([SIGNED, {"type": "text", "text": "Exact response."}])
+    body["input_transformations"] = report
+    response = adapt_response(body, original)
+    assert (
+        original.continuations.open(response["output"][0]["encrypted_content"], original.model)
+        == SIGNED
+    )
+    source = thinking_stream()
+    source[0]["message"]["input_transformations"] = report
+    source[-2]["input_transformations"] = report
+    events = list(adapt_stream(wire(source, "messages", chunk_size=11), original))
+    assert_lifecycle(events)
+    assert events[-1]["type"] == "response.completed"
+    output = events[-1]["response"]["output"]
+    assert adapted(input=[*output, {"role": "user", "content": "Continue."}]).payload["messages"][
+        0
+    ]["content"][:2] == [SIGNED, REDACTED]
+
+
+_TRANSFORMATIONS = [
+    [
+        {
+            "type": "thinking_dropped",
+            "path": "synthetic-private-path",
+            "reason": "prefix_binding_mismatch",
+        }
+    ],
+    [
+        {
+            "type": "thinking_dropped",
+            "path": "synthetic-private-path",
+            "reason": "model_binding_mismatch",
+        }
+    ],
+    [
+        {
+            "type": "thinking_dropped",
+            "path": "synthetic-private-path",
+            "reason": "organization_binding_mismatch",
+        }
+    ],
+    [
+        {
+            "type": "thinking_mismatch_allowed",
+            "path": "synthetic-private-path",
+            "reason": "prefix_binding_mismatch",
+        }
+    ],
+    [{"type": "unknown-future-transformation"}],
+    False,
+    {},
+    "synthetic-private-report",
+]
+
+
+@pytest.mark.parametrize("report", _TRANSFORMATIONS)
+def test_buffered_transformation_report_rejects_before_sealing_or_tool_completion(report):
+    owner = Mock()
+    original = adapted(owner)
+    body = messages_reply([SIGNED, {"type": "text", "text": "Exact response."}])
+    body["input_transformations"] = report
+    with pytest.raises(ProtocolError) as failure:
+        adapt_response(body, original)
+    assert "synthetic-private" not in str(failure.value)
+    owner.seal.assert_not_called()
+    assert not get_codex_home().exists()
+
+
+@pytest.mark.parametrize("position", ["start", "fallback"])
+@pytest.mark.parametrize("report", _TRANSFORMATIONS)
+def test_streamed_transformation_report_fails_before_continuations_and_tools(position, report):
+    owner = Mock()
+    original = adapted(owner)
+    source = thinking_stream()
+    if position == "start":
+        source[0]["message"]["input_transformations"] = report
+    else:
+        source[-2]["input_transformations"] = report
+    events = list(adapt_stream(wire(source, "messages", chunk_size=11), original))
+    assert_lifecycle(events)
+    assert events[-1]["type"] == "response.failed"
+    assert not any(event["type"] == "response.output_item.done" for event in events)
+    assert not any(event.get("item", {}).get("type") == "reasoning" for event in events)
+    assert "synthetic-private" not in str(events)
+    owner.seal.assert_not_called()
+    assert not get_codex_home().exists()
+
+
+@pytest.mark.parametrize("delivery", ["buffered", "streamed"])
+def test_reported_history_loss_withholds_a_complete_coding_tool_call(delivery):
+    owner = Mock()
+    original = adapted(owner, tools=[FUNCTION])
+    tool = {
+        "type": "tool_use",
+        "id": "synthetic-call-id",
+        "name": original.tools.definitions[0]["name"],
+        "input": {"path": "synthetic.txt"},
+    }
+    report = _TRANSFORMATIONS[0]
+    if delivery == "buffered":
+        body = messages_reply([SIGNED, tool], finish="tool_use", input_transformations=report)
+        with pytest.raises(ProtocolError):
+            adapt_response(body, original)
+    else:
+        source = thinking_stream()[:7] + [
+            block(2, tool),
+            stop(2),
+            {**finish("tool_use"), "input_transformations": report},
+            {"type": "message_stop"},
+        ]
+        events = list(adapt_stream(wire(source, "messages", chunk_size=11), original))
+        assert_lifecycle(events)
+        assert events[-1]["type"] == "response.failed"
+        assert not any(event["type"] == "response.output_item.done" for event in events)
+    owner.seal.assert_not_called()
+    assert not get_codex_home().exists()
+
+
+@pytest.mark.parametrize("position", ["start", "fallback"])
+@pytest.mark.parametrize("reported_loss", [False, True])
+def test_async_runtime_path_handles_empty_and_loss_reports(position, reported_loss):
+    source = thinking_stream()
+    report = _TRANSFORMATIONS[0] if reported_loss else []
+    if position == "start":
+        source[0]["message"]["input_transformations"] = report
+    else:
+        source[-2]["input_transformations"] = report
+    original = adapted()
+
+    async def chunks():
+        for chunk in wire(source, "messages", chunk_size=11):
+            yield chunk
+
+    async def collect():
+        return [event async for event in async_adapt_stream(chunks(), original)]
+
+    events = asyncio.run(collect())
+    assert_lifecycle(events)
+    assert events[-1]["type"] == ("response.failed" if reported_loss else "response.completed")
+    if reported_loss:
+        assert not any(event["type"] == "response.output_item.done" for event in events)
+        assert "synthetic-private" not in str(events)
 
 
 @pytest.mark.parametrize(
