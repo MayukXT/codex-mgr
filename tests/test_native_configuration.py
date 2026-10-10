@@ -126,6 +126,22 @@ def test_post_write_checks_every_selection_control(monkeypatch, key, value):
 
 
 @pytest.mark.parametrize(
+    "key,value", [("model_reasoning_effort", "low"), ("model_context_window", 4096)]
+)
+def test_omitted_controls_can_inherit_project_values(monkeypatch, key, value):
+    data = parse_configuration(candidate()).unwrap()
+    data.pop(key)
+    import tomlkit
+
+    encoded = tomlkit.dumps(data).encode("utf-8")
+    data[key] = value
+    view = snapshot(data, {key: {"name": {"type": "project"}}})
+    monkeypatch.setattr(native_config, "read_native_configuration", lambda **_: view)
+    native_config.verify_before_activation(encoded)
+    native_config.verify_after_activation(encoded)
+
+
+@pytest.mark.parametrize(
     "key,value",
     [
         ("base_url", "https://other.invalid/v1"),

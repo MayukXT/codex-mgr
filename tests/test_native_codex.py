@@ -92,6 +92,48 @@ def test_native_project_model_conflict_preserves_saved_selection(tmp_path, monke
     assert not (home / "backups/config").exists()
 
 
+def test_native_automatic_controls_inherit_trusted_project_values(tmp_path, monkeypatch):
+    import tomlkit
+
+    assert find_codex_binary() is not None
+    monkeypatch.chdir(tmp_path)
+    home = get_codex_home()
+    home.mkdir(parents=True)
+    path = home / "config.toml"
+    path.write_text(
+        tomlkit.dumps(
+            {
+                "cli_auth_credentials_store": "file",
+                "projects": {str(tmp_path): {"trust_level": "trusted"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    project = tmp_path / ".codex"
+    project.mkdir()
+    (project / "config.toml").write_text(
+        'model_reasoning_effort="low"\nmodel_context_window=4096\n', encoding="utf-8"
+    )
+    connection = ProviderConfig(
+        id="fixture",
+        name="Fixture",
+        base_url="http://127.0.0.1:1/v1",
+        default_model="synthetic-selected",
+        auth_type="none",
+    )
+    settings = CmgrSettings(providers={"fixture": connection})
+    save_settings(settings)
+    ok, message = apply_settings(settings, activate_provider_id="fixture")
+    assert ok, message
+    effective = read_native_configuration(cwd=tmp_path).config
+    assert effective["model"] == "synthetic-selected"
+    assert effective["model_provider"] == "fixture"
+    assert effective["model_reasoning_effort"] == "low"
+    assert effective["model_context_window"] == 4096
+    saved = tomlkit.parse(path.read_text(encoding="utf-8"))
+    assert "model_reasoning_effort" not in saved and "model_context_window" not in saved
+
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("CMGR_NATIVE_CONTRACTS") != "1",
     reason="Set CMGR_NATIVE_CONTRACTS=1 with Codex 0.159.0 installed.",

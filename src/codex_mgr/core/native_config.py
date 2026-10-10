@@ -57,8 +57,11 @@ def _selection(encoded: bytes) -> dict[tuple[str, ...], object]:
             "Legacy Codex profiles need explicit migration to named .config.toml files. "
             "Existing profile files were preserved."
         )
+    # Omitted controls mean inherit Codex's effective value, not require null.
     values = {
-        (key,): data.get(key) for key in ("model", "model_reasoning_effort", "model_context_window")
+        (key,): data[key]
+        for key in ("model", "model_reasoning_effort", "model_context_window")
+        if key in data
     }
     selected = data.get("model_provider") or "openai"
     values[("model_provider",)] = selected
