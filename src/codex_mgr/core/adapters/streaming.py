@@ -11,7 +11,7 @@ import time
 from copy import deepcopy
 
 from codex_mgr.core.adapters.responses import adapt_response, identifier, response_usage
-from codex_mgr.core.adapters.sse import json_events
+from codex_mgr.core.adapters.sse import async_json_events, json_events
 from codex_mgr.core.adapters.tools import ProtocolError, object_json, text
 
 _MAX_ITEMS = 4096
@@ -486,3 +486,45 @@ def adapt_stream(chunks, adapted, **limits):
         yield from final_events
     finally:
         events.close()
+
+
+async def async_adapt_stream(chunks, adapted, **limits):
+    """Asynchronous transport variant with the same validation/lifecycle states."""
+    lifecycle = _Lifecycle(adapted)
+    yield lifecycle.start()
+    events = async_json_events(chunks, **limits)
+    try:
+        if adapted.protocol not in {"chat", "messages"}:
+            raise ProtocolError("Unsupported upstream stream protocol.")
+        state = (
+            _Chat(adapted, lifecycle)
+            if adapted.protocol == "chat"
+            else _Messages(adapted, lifecycle)
+        )
+        async for event in events:
+            for translated in state.accept(event):
+                yield translated
+        final_events = lifecycle.finish(state.complete())
+    except (ProtocolError, OSError, ValueError, TypeError, RecursionError, OverflowError):
+        yield lifecycle.failed()
+    else:
+        for event in final_events:
+            yield event
+    finally:
+        await events.aclose()
+
+
+def buffered_stream(body, adapted):
+    """Validate a buffered reply before returning a streaming lifecycle iterator."""
+    response = adapt_response(body, adapted)
+    lifecycle = _Lifecycle(adapted)
+
+    def events():
+        yield lifecycle.start()
+        for index, item in enumerate(response["output"]):
+            if item["type"] == "message":
+                for part_index, part in enumerate(item["content"]):
+                    yield from lifecycle.delta(index, part_index, part["text"])
+        yield from lifecycle.finish(response)
+
+    return events()
