@@ -7,7 +7,15 @@ import unicodedata
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 
 class ModelInfo(BaseModel):
@@ -16,6 +24,7 @@ class ModelInfo(BaseModel):
     id: str = Field(description="Unique model slug/identifier, e.g. 'gpt-6.1-sol'")
     name: str = Field(description="Human-friendly display name, e.g. 'GPT-6.1 Sol'")
     context_window: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
     supported_reasoning_levels: list[str] = Field(
         default_factory=list,
         description="Supported reasoning tiers",
@@ -23,6 +32,11 @@ class ModelInfo(BaseModel):
     is_custom: bool = Field(default=False, description="Whether added manually by the user")
     default_reasoning_effort: str | None = None
     reasoning_supported: bool | None = None
+    thinking_supported: StrictBool | None = None
+    effort_supported: StrictBool | None = None
+    thinking_types: dict[
+        Literal["adaptive", "enabled", "disabled", "between_tools"], StrictBool
+    ] = Field(default_factory=dict)
     tools_supported: bool | None = None
     input_modalities: list[str] = Field(default_factory=list)
     wire_api: Literal["responses", "chat", "anthropic_proxy"] | None = None

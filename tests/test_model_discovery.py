@@ -1,10 +1,12 @@
 """Catalog identity, real capabilities, credential routing and paging contracts."""
 
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from codex_mgr.config.schema import ModelInfo, ProviderConfig
 from codex_mgr.core import models
@@ -50,6 +52,135 @@ def test_reported_metadata_and_visibility_are_preserved():
     assert len(result) == 1
     assert result[0].id == "exact/router:id" and result[0].name == "Named model"
     assert result[0].context_window == 8192 and result[0].supported_reasoning_levels == ["high"]
+
+
+def capability_record():
+    return {
+        "id": "exact/opaque-model-id",
+        "display_name": "Reported model",
+        "max_input_tokens": 96000,
+        "max_tokens": 12000,
+        "capabilities": {
+            "thinking": {
+                "supported": True,
+                "types": {
+                    "adaptive": {"supported": True},
+                    "enabled": {"supported": False},
+                    "disabled": {"supported": False},
+                    "between_tools": {"supported": True},
+                },
+            },
+            "effort": {
+                "supported": True,
+                "low": {"supported": True},
+                "medium": {"supported": True},
+                "high": {"supported": True},
+                "xhigh": {"supported": False},
+                "max": {"supported": True},
+            },
+        },
+    }
+
+
+def test_catalog_keeps_reported_thinking_modes_effort_and_output_ceiling():
+    original = capability_record()
+    before = deepcopy(original)
+    item = models.parse_model(original)
+    assert item.id == original["id"] and item.name == original["display_name"]
+    assert item.context_window == 96000 and item.max_output_tokens == 12000
+    assert item.thinking_supported is True and item.effort_supported is True
+    assert item.thinking_types == {
+        "adaptive": True,
+        "enabled": False,
+        "disabled": False,
+        "between_tools": True,
+    }
+    assert item.supported_reasoning_levels == ["low", "medium", "high", "max"]
+    assert original == before
+    assert item.default_reasoning_effort is None
+
+
+def test_disabled_type_support_is_independent_of_thinking_support():
+    item = models.parse_model(
+        {
+            "id": "exact-no-thinking",
+            "capabilities": {
+                "thinking": {
+                    "supported": False,
+                    "types": {"disabled": {"supported": True}, "enabled": {"supported": False}},
+                },
+                "effort": {"supported": False},
+            },
+        }
+    )
+    assert item.thinking_supported is False and item.effort_supported is False
+    assert item.thinking_types == {"disabled": True, "enabled": False}
+    assert item.supported_reasoning_levels == []
+
+
+@pytest.mark.parametrize("value", [None, 1, 0, "true", "false", [], {}])
+def test_malformed_support_values_remain_unknown(value):
+    record = capability_record()
+    record["capabilities"]["thinking"]["supported"] = value
+    record["capabilities"]["thinking"]["types"] = {"adaptive": {"supported": value}}
+    record["capabilities"]["effort"] = {"supported": value, "high": {"supported": value}}
+    item = models.parse_model(record)
+    assert item.thinking_supported is None and item.effort_supported is None
+    assert item.thinking_types == {} and item.supported_reasoning_levels == []
+
+
+@pytest.mark.parametrize("value", [None, False, [], "private-reported-data", 1])
+def test_malformed_capability_containers_do_not_break_or_certify_models(value):
+    for capabilities in (
+        value,
+        {"thinking": value, "effort": value},
+        {"thinking": {"types": value}},
+    ):
+        item = models.parse_model({"id": "exact", "capabilities": capabilities})
+        assert item.thinking_types == {}
+        assert item.thinking_supported is None and item.effort_supported is None
+        assert "private-reported-data" not in repr(item)
+
+
+@pytest.mark.parametrize("value", [None, False, True, 0, -1, "12000", 12.5])
+def test_output_ceiling_is_not_guessed_from_invalid_values(value):
+    item = models.parse_model({"id": "exact", "max_tokens": value})
+    assert item.max_output_tokens is None
+
+
+def test_unknown_capabilities_and_type_payloads_are_not_retained():
+    record = capability_record()
+    record["capabilities"]["private-note"] = "synthetic-private"
+    record["capabilities"]["thinking"]["types"]["future-type"] = {"supported": True}
+    record["capabilities"]["thinking"]["types"]["adaptive"]["private-note"] = "synthetic-private"
+    item = models.parse_model(record)
+    assert "synthetic-private" not in item.model_dump_json()
+    assert "future-type" not in item.thinking_types
+    restored = ModelInfo.model_validate_json(item.model_dump_json())
+    assert restored == item
+
+
+@pytest.mark.parametrize("field", ["thinking_supported", "effort_supported", "thinking_types"])
+@pytest.mark.parametrize("value", [0, 1, "true"])
+def test_persisted_support_flags_require_actual_booleans(field, value):
+    supplied = {"adaptive": value} if field == "thinking_types" else value
+    with pytest.raises(ValidationError):
+        ModelInfo(id="exact", name="Exact", **{field: supplied})
+
+
+def test_stale_capability_snapshot_keeps_only_labels(monkeypatch):
+    monkeypatch.setenv("SELECTED_KEY", "synthetic-first")
+    item = provider(auth_token="$SELECTED_KEY", models=[models.parse_model(capability_record())])
+    item.catalog_source = "provider:/models"
+    item.catalog_scope = models.catalog_scope(item)
+    item.catalog_fetched_at = datetime.now(timezone.utc).isoformat()
+    selected = models.model_metadata(item, item.models[0].id)
+    assert selected.thinking_types["adaptive"] and selected.max_output_tokens == 12000
+    monkeypatch.setenv("SELECTED_KEY", "synthetic-rotated")
+    stale = models.model_metadata(item, selected.id)
+    assert stale.id == selected.id and stale.name == selected.name
+    assert stale.max_output_tokens is None and stale.thinking_types == {}
+    assert stale.thinking_supported is None and stale.effort_supported is None
 
 
 def test_anthropic_pagination_resolves_selected_key_and_endpoint(monkeypatch):

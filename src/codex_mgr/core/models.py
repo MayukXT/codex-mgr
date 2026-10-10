@@ -22,6 +22,11 @@ def _positive(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def _support(value):
+    reported = value.get("supported") if isinstance(value, dict) else None
+    return reported if isinstance(reported, bool) else None
+
+
 def parse_model(item: dict) -> ModelInfo:
     identifier = item.get("model") or item.get("slug") or item.get("id")
     levels = item.get("supportedReasoningEfforts", item.get("supported_reasoning_levels", []))
@@ -45,6 +50,10 @@ def parse_model(item: dict) -> ModelInfo:
             for key, value in effort_caps.items()
             if isinstance(value, dict) and value.get("supported") is True and key not in efforts
         )
+    thinking_caps = capabilities.get("thinking")
+    thinking_types = thinking_caps.get("types") if isinstance(thinking_caps, dict) else None
+    if not isinstance(thinking_types, dict):
+        thinking_types = {}
     protocol = item.get("wire_api")
     if protocol not in {"responses", "chat", "anthropic_proxy"}:
         protocol = None
@@ -54,12 +63,20 @@ def parse_model(item: dict) -> ModelInfo:
         context_window=_positive(
             item.get("context_window") or item.get("context_length") or item.get("max_input_tokens")
         ),
+        max_output_tokens=_positive(item.get("max_output_tokens", item.get("max_tokens"))),
         supported_reasoning_levels=efforts,
         default_reasoning_effort=item.get("defaultReasoningEffort")
         or item.get("default_reasoning_level"),
         reasoning_supported=bool(efforts)
         if "supportedReasoningEfforts" in item or "supported_reasoning_levels" in item
         else None,
+        thinking_supported=_support(thinking_caps),
+        effort_supported=_support(effort_caps),
+        thinking_types={
+            kind: supported
+            for kind in ("adaptive", "enabled", "disabled", "between_tools")
+            if (supported := _support(thinking_types.get(kind))) is not None
+        },
         tools_supported=item.get("tools_supported")
         if isinstance(item.get("tools_supported"), bool)
         else None,
