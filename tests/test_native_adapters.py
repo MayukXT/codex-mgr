@@ -29,7 +29,7 @@ print(json.dumps({'returncode': result.returncode}), flush=True)
 """
 
 
-def launch(tmp_path, runtime, *, session=None, writable=False):
+def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False):
     home = get_codex_home()
     home.mkdir(parents=True, exist_ok=True)
     work = tmp_path / "workspace"
@@ -44,12 +44,17 @@ def launch(tmp_path, runtime, *, session=None, writable=False):
         instructions="Use the declared coding tools and preserve the supplied text.",
     )
     catalog["models"][0]["apply_patch_tool_type"] = "freeform"
+    if reasoning:
+        catalog["models"][0]["supported_reasoning_levels"] = [
+            {"effort": "medium", "description": "Synthetic"}
+        ]
+        catalog["models"][0]["supports_reasoning_summary_parameter"] = True
     catalog_path = home / "synthetic-models.json"
     catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
     config = {
         "model": "synthetic/exact:model",
         "model_provider": "fixture",
-        "model_reasoning_effort": "none",
+        "model_reasoning_effort": "medium" if reasoning else "none",
         "model_reasoning_summary": "none",
         "web_search": "disabled",
         "cli_auth_credentials_store": "file",
@@ -255,3 +260,70 @@ def test_native_custom_patch_result_and_resume_round_trip(
             if isinstance(output, list):
                 output = "".join(item["text"] for item in output if item["type"] == "text")
             assert "read-only sandbox" in output
+
+
+def test_native_signed_thinking_survives_tool_result_owner_restart_and_resume(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    signed = {
+        "type": "thinking",
+        "thinking": "Exact synthetic thinking.",
+        "signature": "synthetic-signature",
+    }
+    redacted = {"type": "redacted_thinking", "data": "synthetic-redacted"}
+    replies = []
+
+    def respond(body):
+        replies.append(body)
+        if len(replies) == 1:
+            patch = (
+                "*** Begin Patch\n*** Add File: signed.txt\n+Exact signed file.\n*** End Patch\n"
+            )
+            source = [
+                start(),
+                block(0, signed),
+                stop(0),
+                block(1, redacted),
+                stop(1),
+                block(
+                    2,
+                    {
+                        "type": "tool_use",
+                        "id": "signed-patch-call",
+                        "name": "apply_patch",
+                        "input": {"input": patch},
+                    },
+                ),
+                stop(2),
+                finish("tool_use"),
+                {"type": "message_stop"},
+            ]
+        else:
+            source = [
+                start(),
+                block(0, {"type": "text", "text": "SYNTHETIC_COMPLETE"}),
+                stop(0),
+                finish(),
+                {"type": "message_stop"},
+            ]
+        return wire(source, "messages")[0]
+
+    with upstream("messages", responder=respond) as (provider, _, _):
+        provider.reasoning_budget = 1024
+        with AdapterRuntime(provider) as runtime:
+            events = launch(tmp_path, runtime, writable=True, reasoning=True)
+            session = next(
+                event["thread_id"] for event in events if event["type"] == "thread.started"
+            )
+        assert (tmp_path / "workspace/signed.txt").read_bytes() == b"Exact signed file.\n"
+        with AdapterRuntime(provider) as restarted:
+            launch(tmp_path, restarted, session=session, writable=True, reasoning=True)
+    assert len(replies) == 3
+    for body in replies[1:]:
+        blocks = [item for message in body["messages"] for item in message["content"]]
+        assert [item for item in blocks if item["type"] in {"thinking", "redacted_thinking"}] == [
+            signed,
+            redacted,
+        ]
+        assert any(item.get("tool_use_id") == "signed-patch-call" for item in blocks)

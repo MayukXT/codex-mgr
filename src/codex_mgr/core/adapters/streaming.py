@@ -115,6 +115,12 @@ class _Lifecycle:
                     events.append(
                         self.event("response.content_part.done", **fields, part=deepcopy(part))
                     )
+            elif item["type"] == "reasoning":
+                events.append(
+                    self.event(
+                        "response.output_item.added", output_index=index, item=deepcopy(item)
+                    )
+                )
             else:
                 added = deepcopy(item)
                 key = "arguments" if item["type"] == "function_call" else "input"
@@ -369,6 +375,22 @@ class _Messages:
                     raise ProtocolError("Invalid upstream tool block input.")
                 self.blocks.append({**block, "parts": []})
                 events = []
+            elif block.get("type") == "thinking":
+                _fields(block, {"type", "thinking", "signature"})
+                self.blocks.append(
+                    {
+                        "type": "thinking",
+                        "parts": [text(block.get("thinking"))],
+                        "signatures": [text(block.get("signature"))],
+                    }
+                )
+                events = []
+            elif block.get("type") == "redacted_thinking":
+                _fields(block, {"type", "data"})
+                self.blocks.append(
+                    {"type": "redacted_thinking", "data": text(block.get("data"), nonempty=True)}
+                )
+                events = []
             else:
                 raise ProtocolError("This upstream block needs a verified stream mapping.")
             self.active = index
@@ -394,6 +416,20 @@ class _Messages:
                 value = text(delta.get("text"))
                 block["parts"].append(value)
                 return list(self.lifecycle.delta(index, 0, value))
+            if block["type"] == "thinking":
+                if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
+                    _fields(delta, {"type", "thinking"})
+                    if any(block["signatures"]):
+                        raise ProtocolError("Upstream thinking continued after its signature.")
+                    block["parts"].append(text(delta.get("thinking")))
+                else:
+                    _fields(delta, {"type", "signature"})
+                    if delta.get("type") != "signature_delta":
+                        raise ProtocolError("Invalid upstream thinking delta.")
+                    block["signatures"].append(text(delta.get("signature")))
+                return []
+            if block["type"] != "tool_use":
+                raise ProtocolError("Upstream delta is invalid for this block type.")
             _fields(delta, {"type", "partial_json"})
             if delta.get("type") != "input_json_delta" or block["input"]:
                 raise ProtocolError("Invalid or ambiguous upstream tool delta.")
@@ -454,6 +490,14 @@ class _Messages:
         for block in self.blocks:
             if block["type"] == "text":
                 content.append({"type": "text", "text": "".join(block["parts"])})
+            elif block["type"] == "thinking":
+                content.append(
+                    {
+                        "type": "thinking",
+                        "thinking": "".join(block["parts"]),
+                        "signature": "".join(block["signatures"]),
+                    }
+                )
             else:
                 content.append({key: value for key, value in block.items() if key != "parts"})
         self.message["content"] = content

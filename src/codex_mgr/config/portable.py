@@ -26,6 +26,9 @@ def export_bundle(output_path: Path, sanitize_keys=True, *, overwrite=False):
         "cmgr.json",
         "models_cache.json",
         "session_index.jsonl",
+        "cmgr-adapter-continuations.key",
+        "cmgr-adapter-continuations.key.sha256",
+        "cmgr-adapter-continuations.key.cmgr.lock",
     }
     if (
         target.parent == home

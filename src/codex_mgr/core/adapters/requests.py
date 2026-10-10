@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
+from codex_mgr.core.adapters.continuations import ContinuationCodec
 from codex_mgr.core.adapters.tools import (
     ProtocolError,
     ToolRegistry,
@@ -49,6 +50,7 @@ class AdaptedRequest:
     model: str
     payload: dict = field(repr=False)
     tools: ToolRegistry = field(repr=False)
+    continuations: ContinuationCodec | None = field(default=None, repr=False)
 
 
 def _image(block, protocol):
@@ -121,13 +123,18 @@ def _append(messages, role, content, *, protocol):
         messages.append({"role": role, "content": content})
 
 
-def _history(items, protocol, registry):
+def _history(items, protocol, registry, continuations, model):
     messages, system, pending, seen_calls = [], [], {}, set()
     for item in items:
         if not isinstance(item, dict):
             raise ProtocolError("Invalid Responses history item.")
         kind = item.get("type", "message")
-        if kind == "message":
+        if kind == "reasoning":
+            if protocol != "messages" or continuations is None or pending:
+                raise ProtocolError("Reasoning history needs a compatible bound continuation.")
+            block = continuations.open(item.get("encrypted_content"), model)
+            _append(messages, "assistant", [block], protocol=protocol)
+        elif kind == "message":
             role = item.get("role")
             if role not in {"system", "developer", "user", "assistant"}:
                 raise ProtocolError("Invalid Responses message role.")
@@ -300,7 +307,9 @@ def _controls(request, payload, protocol, max_output_tokens, thinking_budget):
             raise ProtocolError("Structured output needs a verified adapter mapping.")
 
 
-def _adapt_request(request, protocol, *, max_output_tokens=None, thinking_budget=None):
+def _adapt_request(
+    request, protocol, *, max_output_tokens=None, thinking_budget=None, continuations=None
+):
     """Map a complete supported history; no HTTP, files, logging or input mutation."""
     if protocol not in {"chat", "messages"} or not isinstance(request, dict):
         raise ProtocolError("Choose a supported adapter protocol and JSON request.")
@@ -337,7 +346,7 @@ def _adapt_request(request, protocol, *, max_output_tokens=None, thinking_budget
         raise ProtocolError(
             "Supply Responses input; the adapter does not invent an initial message."
         )
-    messages, system = _history(items, protocol, registry)
+    messages, system = _history(items, protocol, registry, continuations, model)
     instructions = request.get("instructions")
     if instructions is not None:
         block = {"type": "text", "text": text(instructions)}
@@ -375,13 +384,19 @@ def _adapt_request(request, protocol, *, max_output_tokens=None, thinking_budget
     _controls(request, payload, protocol, max_output_tokens, thinking_budget)
     if len(encoded_json(payload).encode()) > _MAX_REQUEST_BYTES:
         raise ProtocolError("Translated request exceeds the size limit.")
-    return AdaptedRequest(protocol, model, deepcopy(payload), registry)
+    return AdaptedRequest(protocol, model, deepcopy(payload), registry, continuations)
 
 
-def adapt_request(request, protocol, *, max_output_tokens=None, thinking_budget=None):
+def adapt_request(
+    request, protocol, *, max_output_tokens=None, thinking_budget=None, continuations=None
+):
     try:
         return _adapt_request(
-            request, protocol, max_output_tokens=max_output_tokens, thinking_budget=thinking_budget
+            request,
+            protocol,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            continuations=continuations,
         )
     except ProtocolError:
         raise

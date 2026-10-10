@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from codex_mgr.core.adapters.continuations import ContinuationCodec, connection_scope
 from codex_mgr.core.adapters.requests import adapt_request
 from codex_mgr.core.adapters.responses import adapt_response
 from codex_mgr.core.adapters.sse import encode_event
@@ -116,6 +117,11 @@ class AdapterRuntime:
         except (ValueError, UnicodeError) as exc:
             raise AdapterError("Invalid upstream headers.") from exc
         self._headers = dict(headers)
+        self._continuations = (
+            ContinuationCodec(connection_scope(self._protocol, self._url, self._headers))
+            if self._protocol == "messages"
+            else None
+        )
         self._max_output_tokens = provider.max_output_tokens
         self._thinking_budget = provider.reasoning_budget
         self._upstream_streaming = provider.streaming
@@ -289,6 +295,7 @@ class AdapterRuntime:
                 self._protocol,
                 max_output_tokens=self._max_output_tokens,
                 thinking_budget=self._thinking_budget,
+                continuations=self._continuations,
             )
         except (
             ProtocolError,

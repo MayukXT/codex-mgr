@@ -25,7 +25,7 @@ def normalize_base_url(url: str, wire_api: str = "responses") -> str:
 
     if not cleaned.startswith(("http://", "https://")):
         # Default to https unless localhost
-        if cleaned.startswith("localhost") or cleaned.startswith("127.0.0.1"):
+        if cleaned.startswith(("localhost", "127.0.0.1")):
             cleaned = f"http://{cleaned}"
         else:
             cleaned = f"https://{cleaned}"
@@ -42,14 +42,9 @@ def normalize_base_url(url: str, wire_api: str = "responses") -> str:
         # e.g. api.deepseek.com -> api.deepseek.com/v1
         path = "/v1"
 
-    normalized = urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        path,
-        parsed.params,
-        parsed.query,
-        parsed.fragment
-    ))
+    normalized = urlunparse(
+        (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
+    )
     return normalized.rstrip("/")
 
 

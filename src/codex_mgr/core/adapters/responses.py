@@ -162,6 +162,20 @@ def _messages_output(body, adapted):
                     incomplete=incomplete,
                 )
             )
+        elif block.get("type") in {"thinking", "redacted_thinking"}:
+            if (
+                adapted.continuations is None
+                or adapted.payload.get("thinking", {}).get("type") != "enabled"
+            ):
+                raise ProtocolError("Messages thinking needs an enabled, bound continuation.")
+            output.append(
+                {
+                    "type": "reasoning",
+                    "id": identifier("rs_"),
+                    "summary": [],
+                    "encrypted_content": adapted.continuations.seal(block, adapted.model),
+                }
+            )
         elif block.get("type") == "tool_use" and finish == "tool_use":
             if not isinstance(block.get("input"), dict):
                 raise ProtocolError("Invalid upstream tool arguments.")

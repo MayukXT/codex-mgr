@@ -9,7 +9,7 @@ from codex_mgr.config.portable import apply_import_bundle, export_bundle
 from codex_mgr.config.schema import CmgrSettings, ExportBundle, ModelInfo, ProviderConfig
 from codex_mgr.config.settings import load_settings, save_settings
 from codex_mgr.core.profiles import read_config_toml
-from codex_mgr.utils.paths import get_cmgr_settings_path, get_config_toml_path
+from codex_mgr.utils.paths import get_cmgr_settings_path, get_codex_home, get_config_toml_path
 
 
 def configured():
@@ -62,6 +62,23 @@ def test_export_preserves_existing_files_and_runtime_settings(tmp_path):
     with pytest.raises(ValueError):
         export_bundle(get_cmgr_settings_path(), overwrite=True)
     assert get_cmgr_settings_path().read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "cmgr-adapter-continuations.key",
+        "cmgr-adapter-continuations.key.sha256",
+        "cmgr-adapter-continuations.key.cmgr.lock",
+    ],
+)
+def test_export_cannot_overwrite_reasoning_key_or_its_lock(name):
+    configured()
+    target = get_codex_home() / name
+    target.write_bytes(b"synthetic-existing")
+    with pytest.raises(ValueError):
+        export_bundle(target, overwrite=True)
+    assert target.read_bytes() == b"synthetic-existing"
 
 
 def test_renamed_imports_keep_independent_connection_ids(tmp_path):
