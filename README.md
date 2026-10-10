@@ -63,7 +63,7 @@ cmgr update --check
 
 Activation asks Codex to resolve configuration layers and managed requirements in the current working directory. It verifies the effective connection and model before saving the manager's active state. Conflicting project or managed settings stop the change; failed verification rolls back matching files and preserves external edits. Legacy `[profiles]` configurations require explicit migration and are preserved when activation stops.
 
-`cmgr start --provider my-api "INITIAL PROMPT"` uses the same selected credential and activation checks for a fresh session. Prompt text is passed as one literal argument to Codex. On Windows, supported npm command wrappers are resolved to the packaged native executable; unresolved shell wrappers require adding the native executable to PATH. Codex errors and cancellation return a nonzero status.
+`cmgr start --provider my-api "INITIAL PROMPT"` validates the selected credentials and model before starting a fresh session. Responses connections use guarded configuration activation. Chat Completions and Anthropic Messages connections use a temporary local adapter with native policy and configuration checks. The adapter stays running until Codex exits; only the original upstream connection is saved in manager settings. Native `config.toml` stays unchanged for adapter launches, so use `cmgr start` to launch that saved connection again. Prompt text is passed as one literal argument to Codex. On Windows, supported npm command wrappers are resolved to the packaged native executable; unresolved shell wrappers require adding the native executable to PATH. Codex errors and cancellation return a nonzero status.
 
 `cmgr doctor` reports failed, warning and unchecked states separately. It does not establish inference or tool compatibility. Failed diagnostics and unavailable update checks return a nonzero exit code. `cmgr update` installs the checked stable release with the current Python interpreter's pip, verifies its installed version, and asks you to restart. If pip cannot manage that environment, use the package manager that installed it.
 
@@ -83,7 +83,7 @@ Codex configuration separates the selected model from the connection used to run
 
 For a custom connection, the ID must match `model_provider`. A friendly provider name does not determine the model or grant access to it. Current Codex supports the Responses protocol for custom providers; a Chat Completions endpoint needs a compatible adapter. See [Codex configuration](https://developers.openai.com/codex/config-advanced/).
 
-The wizard offers separate ChatGPT sign-in, OpenAI API-key, and Anthropic API-key connections. Codex handles ChatGPT login and refresh. The Anthropic template can be saved, but activation requires the adapter work described in the compatibility notes.
+The wizard offers separate ChatGPT sign-in, OpenAI API-key, and Anthropic API-key connections. Codex handles ChatGPT login and refresh. Chat and Messages adapters support fresh launches through `cmgr start` or the menu's new-session action. Persistent switching and shared session resumption for these transports remain gated. See the [compatibility notes](docs/wiki/Compatibility.md) for reasoning and protocol limits.
 
 Provider presets are configuration starting points. A preset or a successful model-list request does not establish that a model supports the complete coding workflow. Model IDs and capabilities should be checked against the selected provider's current catalog.
 

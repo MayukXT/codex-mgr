@@ -36,6 +36,11 @@ def serialize_settings(settings: CmgrSettings) -> bytes:
 
 
 def _import_configuration(settings: CmgrSettings) -> None:
+    active = settings.providers.get(settings.active_provider_id)
+    if active is not None and active.wire_api != "responses":
+        # Adapter routing exists only in a cmgr-owned launch. The unchanged
+        # native base selection must not replace this durable upstream choice.
+        return
     if not get_config_toml_path().exists():
         return
     import_configuration(settings, read_config_toml())

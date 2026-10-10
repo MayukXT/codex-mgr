@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codex_mgr.config.schema import CmgrSettings
+from codex_mgr.config.schema import CmgrSettings, ProviderConfig
 from codex_mgr.config.settings import load_settings
-from codex_mgr.core.activation import apply_settings
+from codex_mgr.core.activation import apply_settings, recover_pending_activation
+from codex_mgr.core.adapters.launch import AdapterLaunch
 from codex_mgr.core.auth import codex_login_status
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.models import provider_headers
@@ -25,13 +26,18 @@ class ResumePreview:
     encrypted_items: int
 
 
-def _target(settings: CmgrSettings, provider_id: str | None):
+def _target(settings: CmgrSettings, provider_id: str | None, *, allow_adapter: bool = False):
     provider = settings.providers.get(provider_id or settings.active_provider_id)
     if provider is None:
         raise ConfigurationError("Choose a configured connection before resuming.")
+    provider = ProviderConfig.model_validate(provider.model_dump())
     if find_codex_binary() is None:
         raise ConfigurationError("Install Codex CLI before starting a session.")
-    prepare_configuration(provider, read_optional(get_config_toml_path()))
+    if allow_adapter and provider.wire_api != "responses":
+        if not provider.model_selected:
+            raise ConfigurationError("Choose an exact model ID before starting Codex.")
+    else:
+        prepare_configuration(provider, read_optional(get_config_toml_path()))
     if provider.auth_type == "official_oauth":
         status = codex_login_status()
         if not status.signed_in or status.method != "chatgpt":
@@ -63,22 +69,44 @@ def start_session(
     prompt: str | None = None,
     settings: CmgrSettings | None = None,
 ) -> tuple[int, str]:
-    """Use the same credential validation and activation as session resumption."""
+    """Validate the selected route and keep temporary adapters owned by the handoff."""
     try:
         if prompt is not None and "\x00" in prompt:
             return 1, "The initial prompt cannot contain a null character."
         settings = settings or load_settings()
-        provider = _target(settings, provider_id)
-        ok, message = apply_settings(settings, activate_provider_id=provider.id)
-        if not ok:
-            return 1, message
-        code = launch_codex(prompt=prompt)
+        provider = _target(settings, provider_id, allow_adapter=True)
+        if provider.wire_api == "responses":
+            ok, message = apply_settings(settings, activate_provider_id=provider.id)
+            if not ok:
+                return 1, message
+            code = launch_codex(prompt=prompt)
+        else:
+            # Validate controls before recovery, then verify against the recovered
+            # native configuration before saving the original upstream selection.
+            scope = AdapterLaunch(provider)
+            ok, message = recover_pending_activation()
+            if not ok:
+                return 1, message
+            with scope:
+                previous = settings.active_provider_id
+                settings.active_provider_id = provider.id
+                saved = False
+                try:
+                    saved, message = apply_settings(settings)
+                finally:
+                    if not saved:
+                        settings.active_provider_id = previous
+                if not saved:
+                    return 1, message
+                code = scope.run(prompt=prompt)
         return (
             code,
             "Codex closed."
             if code == 0
             else "Codex exited unsuccessfully; the selected configuration remains available.",
         )
+    except KeyboardInterrupt:
+        return 130, "Session launch was cancelled."
     except (ConfigurationError, FileConflictError) as exc:
         return 1, str(exc)
     except (OSError, ValueError, RuntimeError):

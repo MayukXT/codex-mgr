@@ -15,6 +15,8 @@ If saved connections share a Codex ID, the saved active connection resolves that
 
 A compatible connection needs a model ID and protocol in addition to its endpoint and credentials. Current Codex uses the Responses protocol. Chat Completions and Anthropic Messages services require a compatible adapter.
 
+Fresh Chat and Messages sessions use temporary routing through `cmgr start` or the menu's new-session action. The saved active connection remains the original upstream endpoint, credentials and model. Reloading manager settings preserves that selection instead of importing the unchanged native base selection over it. Running Codex directly uses its native configuration; run it through the manager to use the adapter. See [compatibility](Compatibility.md) for supported controls and current resume limits.
+
 ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Codex manage sign-in and refresh. An API key authorizes the selected API endpoint; a subscription does not establish access to an unrelated gateway.
 
 Prefer an environment-variable credential reference over storing a pasted key. Never put a key in an endpoint URL. See [privacy](Security-And-Privacy-Guide.md) and [compatibility](Compatibility.md).

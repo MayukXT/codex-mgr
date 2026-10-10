@@ -12,7 +12,9 @@ import zstandard
 from test_adapter_runtime import synthetic_loopback_http, upstream  # noqa: F401 -- shared fixture
 from test_streaming_codecs import block, chat, delta, finish, start, stop, wire
 
-from codex_mgr.config.schema import ModelInfo, ProviderConfig
+from codex_mgr.config.schema import CmgrSettings, ModelInfo, ProviderConfig
+from codex_mgr.config.settings import load_settings, save_settings
+from codex_mgr.core import resume
 from codex_mgr.core.adapters.launch import AdapterLaunch, adapter_connection_id
 from codex_mgr.core.adapters.runtime import AdapterRuntime
 from codex_mgr.core.backup import (
@@ -516,6 +518,79 @@ def test_native_verified_launch_overrides_preserve_original_configuration(
         assert all(request[2]["model"] == provider.default_model for request in received)
         assert config.read_bytes() == original
         assert not (home / "cmgr.json").exists()
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages"])
+def test_native_shared_fresh_adapter_start_retains_upstream_selection(
+    protocol, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    home = get_codex_home()
+    home.mkdir()
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    config = home / "config.toml"
+    config.write_text(
+        tomlkit.dumps(
+            {
+                "model": "synthetic-original",
+                "cli_auth_credentials_store": "file",
+                "projects": {str(work): {"trust_level": "trusted"}},
+                "features": {
+                    "plugins": False,
+                    "recommended_plugins": False,
+                    "remote_plugin": False,
+                    "remote_models": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = config.read_bytes()
+    binary = find_codex_binary()
+    assert binary is not None
+    completed = []
+
+    def native_exec(*, session_id=None, prompt=None, extra_args=None, environment=None):
+        assert session_id is None
+        command = [
+            str(binary),
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--sandbox",
+            "read-only",
+            *extra_args,
+            "--",
+            prompt,
+        ]
+        events = _execute_native(tmp_path, command, environment)
+        assert events[-2]["item"]["text"] == "  Exact 🌙\n"
+        completed.append(events[0]["thread_id"])
+        assert config.read_bytes() == original
+        return 0
+
+    monkeypatch.setattr("codex_mgr.core.adapters.launch.launch_codex", native_exec)
+    with upstream(protocol) as (provider, received, _):
+        save_settings(CmgrSettings(providers={provider.id: provider}))
+        for selected in (provider.id, None):
+            assert resume.start_session(
+                selected, prompt="Use the synthetic provider response and report its exact text."
+            ) == (0, "Codex closed.")
+            saved = load_settings()
+            assert saved.active_provider_id == provider.id
+            assert saved.providers[provider.id].model_dump() == provider.model_dump()
+            assert "CMGR_ADAPTER_TOKEN_" not in (home / "cmgr.json").read_text(encoding="utf-8")
+        assert len(set(completed)) == len(received) == 2
+        assert all(request[2]["model"] == provider.default_model for request in received)
+        rollouts = list((home / "sessions").rglob("*.jsonl"))
+        assert len(rollouts) == 2
+        for path in rollouts:
+            header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+            assert header["payload"]["model_provider"] == adapter_connection_id(provider)
+        assert config.read_bytes() == original
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages"])
