@@ -207,6 +207,7 @@ def test_invalid_rpc_shape_is_generic(monkeypatch, response):
 def test_rpc_error_does_not_echo_server_text(monkeypatch):
     reader = Mock()
     reader.__enter__ = Mock(side_effect=CodexRpcError("synthetic-private-error"))
+    reader.__exit__ = Mock()
     monkeypatch.setattr(native_config, "CodexReader", lambda: reader)
     with pytest.raises(ConfigurationError) as error:
         native_config.read_native_configuration()
