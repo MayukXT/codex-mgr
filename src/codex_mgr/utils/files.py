@@ -19,6 +19,11 @@ class FileConflictError(RuntimeError):
     """Another writer owns the mutation lock or changed the expected file."""
 
 
+def is_linked_path(path: Path) -> bool:
+    """Detect symlinks and Windows reparse points, including Python 3.10 junctions."""
+    return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
+
+
 def read_optional(path: Path) -> bytes | None:
     try:
         return path.read_bytes()

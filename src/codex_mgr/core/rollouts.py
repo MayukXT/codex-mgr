@@ -37,6 +37,12 @@ def canonical_session_id(value: object) -> str:
     return str(UUID(value))
 
 
+def rollout_id_from_filename(path: Path) -> str | None:
+    """Read immutable rollout identity, including native replacement filenames."""
+    match = _FILENAME.fullmatch(path.name)
+    return canonical_session_id(match["rollout_id"] or match["id"]) if match else None
+
+
 @dataclass(frozen=True)
 class SessionMetadata:
     id: str
@@ -84,7 +90,7 @@ def metadata_from_record(record: object, path: Path) -> SessionMetadata:
         raw_id is None,
         mode == "paginated" or payload.get("history_base") is not None,
         path.name.endswith(".jsonl.zst"),
-        canonical_session_id(match["rollout_id"] or match["id"]) if match else session_id,
+        rollout_id_from_filename(path) or session_id,
     )
 
 

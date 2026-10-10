@@ -22,6 +22,7 @@ from codex_mgr.core.backup import (
 )
 from codex_mgr.core.bridge import BridgeError, prepare_bridge
 from codex_mgr.core.catalog import catalog_document
+from codex_mgr.core.history_lineage import resolve_history_lineage
 from codex_mgr.core.history_stream import iter_history_records
 from codex_mgr.core.rollouts import read_session_metadata
 from codex_mgr.core.rpc import CodexReader
@@ -148,6 +149,110 @@ def test_native_independent_materialized_history_preserves_source_and_resumes(
             and message["content"] == [{"type": "text", "text": "  Exact 🌙\n"}]
             for message in received[-1][2]["messages"]
         )
+
+
+@pytest.mark.parametrize(
+    "representation", ["plain", "compressed-archive", "compacted-compressed-archive"]
+)
+def test_native_nested_lineage_materializes_frozen_prefixes_and_resumes(
+    representation, tmp_path, monkeypatch
+):
+    class SyntheticWriter(CodexReader):
+        ALLOWED = CodexReader.ALLOWED | {"thread/resume", "thread/fork"}
+
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream() as (provider, received, _), AdapterRuntime(provider) as runtime:
+        parent_id = launch(tmp_path, runtime)[0]["thread_id"]
+        compacted = representation.startswith("compacted")
+        compacted_text = "  Synthetic compacted 🌙\n"
+        if compacted:
+            parent = find_session_by_id_or_title(parent_id).require_rollout()
+            parent_records = [json.loads(raw) for raw in parent.read_bytes().splitlines()]
+            checkpoint = {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "ordinal": parent_records[-1]["ordinal"] + 1,
+                "type": "compacted",
+                "payload": {
+                    "message": compacted_text,
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "Synthetic frozen compacted context"}
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": compacted_text}],
+                        },
+                    ],
+                    "replacement_history_metadata": [{}, {}],
+                    "window_number": 1,
+                    "window_id": str(uuid4()),
+                },
+            }
+            with parent.open("ab") as target:
+                target.write(json.dumps(checkpoint, ensure_ascii=False).encode() + b"\n")
+        environment = os.environ.copy()
+        environment["CMGR_NATIVE_FIXTURE_KEY"] = runtime.token
+
+        def fork(identity):
+            with SyntheticWriter(environment=environment) as writer:
+                writer.request("thread/resume", {"threadId": identity})
+                return writer.request("thread/fork", {"threadId": identity, "excludeTurns": True})[
+                    "thread"
+                ]["id"]
+
+        child_id = fork(parent_id)
+        launch(tmp_path, runtime, session=child_id)
+        root_id = fork(child_id)
+        # Both ancestors now get a newer turn excluded by the grandchild's frozen cutoffs.
+        launch(tmp_path, runtime, session=parent_id)
+        launch(tmp_path, runtime, session=child_id)
+        root = find_session_by_id_or_title(root_id).require_rollout()
+        lineage = resolve_history_lineage(root)
+        assert len(lineage.segments) == 3
+        if representation.endswith("compressed-archive"):
+            for index, segment in enumerate(lineage.segments[:-1]):
+                source = segment.path
+                destination = source.with_suffix(".jsonl.zst")
+                if index == 0:
+                    folder = get_codex_home() / "archived_sessions"
+                    folder.mkdir(exist_ok=True)
+                    destination = folder / destination.name
+                destination.write_bytes(
+                    zstandard.ZstdCompressor(write_checksum=True).compress(source.read_bytes())
+                )
+                source.unlink()
+            lineage = resolve_history_lineage(root)
+            assert lineage.segments[0].path.parent.name == "archived_sessions"
+            assert all(segment.path.name.endswith(".zst") for segment in lineage.segments[:-1])
+        originals = {segment.path: segment.path.read_bytes() for segment in lineage.segments}
+        records = list(lineage.iter_records())
+        metadata = JsonEdits(records[0].decode())
+        imported_id = str(uuid4())
+        metadata.set(("payload", "id"), imported_id)
+        metadata.set(("payload", "history_mode"), "legacy")
+        metadata.set(("payload", "history_base"), None)
+        metadata.set(("payload", "forked_from_id"), root_id)
+        metadata.set(("payload", "forked_from_ordinal_exclusive"), None)
+        imported = root.with_name(root.name.replace(root_id, imported_id))
+        imported_bytes = metadata.render().encode() + b"".join(records[1:])
+        imported.write_bytes(imported_bytes)
+        resumed = launch(tmp_path, runtime, session=imported_id)
+        assert resumed[0]["thread_id"] == imported_id
+        assert {path: path.read_bytes() for path in originals} == originals
+        assert imported.read_bytes().startswith(imported_bytes)
+        prior = [
+            message for message in received[-1][2]["messages"] if message["role"] == "assistant"
+        ]
+        assert len(prior) == 2
+        expected_texts = [compacted_text if compacted else "  Exact 🌙\n", "  Exact 🌙\n"]
+        assert [message["content"] for message in prior] == [
+            [{"type": "text", "text": text}] for text in expected_texts
+        ]
 
 
 _NATIVE_RUNNER = """

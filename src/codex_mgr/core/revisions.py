@@ -15,6 +15,7 @@ from codex_mgr.core.activation import apply_configuration
 from codex_mgr.core.native_config import validate_activation_configuration
 from codex_mgr.core.profiles import ConfigurationError, parse_configuration, prepare_configuration
 from codex_mgr.utils.files import FileConflictError, read_optional
+from codex_mgr.utils.files import is_linked_path as _linked
 from codex_mgr.utils.paths import get_cmgr_settings_path, get_codex_home, get_config_toml_path
 
 RevisionKind = Literal["config", "settings"]
@@ -49,11 +50,6 @@ class RevisionRestore:
     settings: bytes = field(repr=False)
     config_before: bytes | None = field(repr=False)
     settings_before: bytes | None = field(repr=False)
-
-
-def _linked(path: Path) -> bool:
-    # Windows junctions are reparse points even on Python versions without is_junction.
-    return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
 
 
 def _folder(kind: RevisionKind) -> Path:
