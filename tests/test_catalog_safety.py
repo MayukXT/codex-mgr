@@ -162,6 +162,9 @@ def test_fresh_or_manual_metadata_supplies_actual_controls(manual):
     item.reasoning_effort = "unsupported"
     with pytest.raises(ValueError, match="reasoning"):
         prepare_configuration(item, None)
+    item.reasoning_effort = None
+    configuration = tomlkit.parse(prepare_configuration(item, None).decode())
+    assert "model_reasoning_effort" not in configuration
 
 
 @pytest.mark.parametrize("bad", ["high\x1b[2J", "high\n", "high\x7f", "high\x9b2J", "  "])

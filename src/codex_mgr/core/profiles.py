@@ -103,6 +103,7 @@ def prepare_configuration(provider: ProviderConfig, raw: bytes | None) -> bytes:
     if (
         model
         and model.supported_reasoning_levels
+        and effort is not None
         and effort not in model.supported_reasoning_levels
     ):
         raise ConfigurationError("The selected model does not advertise this reasoning effort.")
