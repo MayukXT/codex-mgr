@@ -99,7 +99,7 @@ def test_openai_api_key_and_endpoint_reach_custom_connection(codex_home):
     assert table["experimental_bearer_token"] == "synthetic-api-token"
 
 
-def test_active_profile_is_updated_without_changing_global_model(codex_home):
+def test_legacy_profile_is_preserved_until_explicit_migration(codex_home):
     (codex_home / "config.toml").write_text(
         """model = "global"
 profile = "work"
@@ -110,11 +110,13 @@ model = "other"
 """,
         encoding="utf-8",
     )
-    ok, _ = switch_active_provider(gateway())
-    assert ok
+    before = (codex_home / "config.toml").read_bytes()
+    ok, message = switch_active_provider(gateway())
+    assert not ok and "migration" in message
+    assert (codex_home / "config.toml").read_bytes() == before
     data = read_config_toml()
     assert data["model"] == "global"
-    assert data["profiles"]["work"]["model"] == "coding-model"
+    assert data["profiles"]["work"]["model"] == "profile-old"
     assert data["profiles"]["other"]["model"] == "other"
 
 

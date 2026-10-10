@@ -7,11 +7,90 @@ from pathlib import Path
 
 import pytest
 
+from codex_mgr.config.schema import CmgrSettings, ProviderConfig
+from codex_mgr.config.settings import save_settings
+from codex_mgr.core.activation import apply_settings
 from codex_mgr.core.bridge import bridge_session_rollout
+from codex_mgr.core.native_config import read_native_configuration
 from codex_mgr.core.rpc import CodexReader
 from codex_mgr.core.session_lock import session_write_guard
 from codex_mgr.utils.files import FileConflictError
 from codex_mgr.utils.paths import find_codex_binary, get_codex_home
+
+
+def test_native_activation_verifies_effective_connection_and_controls(tmp_path, monkeypatch):
+    binary = find_codex_binary()
+    assert binary is not None, "Install Codex 0.159.0 to run this contract."
+    version = subprocess.run(
+        [str(binary), "--version"], capture_output=True, text=True, check=True, timeout=10
+    )
+    assert version.stdout.strip().endswith(" 0.159.0")
+    monkeypatch.chdir(tmp_path)
+    home = get_codex_home()
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        'model="synthetic-original"\ncli_auth_credentials_store="file"\n', encoding="utf-8"
+    )
+    provider = ProviderConfig(
+        id="fixture",
+        name="Fixture",
+        base_url="http://127.0.0.1:1/v1",
+        default_model="synthetic-selected",
+        auth_type="none",
+        reasoning_effort="high",
+        context_window_limit=8192,
+        http_headers={"X-Synthetic": "fixture"},
+    )
+    settings = CmgrSettings(providers={"fixture": provider})
+    save_settings(settings)
+    ok, message = apply_settings(settings, activate_provider_id="fixture")
+    assert ok, message
+    view = read_native_configuration(cwd=tmp_path)
+    assert view.config["model"] == "synthetic-selected"
+    assert view.config["model_provider"] == "fixture"
+    assert view.config["model_reasoning_effort"] == "high"
+    assert view.config["model_context_window"] == 8192
+    connection = view.config["model_providers"]["fixture"]
+    assert connection["base_url"] == "http://127.0.0.1:1/v1"
+    assert connection["wire_api"] == "responses" and connection["requires_openai_auth"] is False
+    assert connection["http_headers"] == {"X-Synthetic": "fixture"}
+
+
+def test_native_project_model_conflict_preserves_saved_selection(tmp_path, monkeypatch):
+    import tomlkit
+
+    binary = find_codex_binary()
+    assert binary is not None
+    monkeypatch.chdir(tmp_path)
+    home = get_codex_home()
+    home.mkdir(parents=True)
+    config = {
+        "model": "synthetic-original",
+        "cli_auth_credentials_store": "file",
+        "projects": {str(tmp_path): {"trust_level": "trusted"}},
+    }
+    path = home / "config.toml"
+    path.write_text(tomlkit.dumps(config), encoding="utf-8")
+    project = tmp_path / ".codex"
+    project.mkdir()
+    (project / "config.toml").write_text('model="synthetic-project"\n', encoding="utf-8")
+    assert read_native_configuration().config["model"] == "synthetic-project"
+    provider = ProviderConfig(
+        id="fixture",
+        name="Fixture",
+        base_url="http://127.0.0.1:1/v1",
+        default_model="synthetic-selected",
+        auth_type="none",
+    )
+    settings = CmgrSettings(providers={"fixture": provider})
+    save_settings(settings)
+    before = path.read_bytes()
+    saved = (home / "cmgr.json").read_bytes()
+    ok, message = apply_settings(settings, activate_provider_id="fixture")
+    assert not ok and "layer" in message
+    assert path.read_bytes() == before and (home / "cmgr.json").read_bytes() == saved
+    assert not (home / "backups/config").exists()
+
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CMGR_NATIVE_CONTRACTS") != "1",

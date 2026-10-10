@@ -19,7 +19,11 @@ ChatGPT sign-in and OpenAI API-key authentication are separate methods. Let Code
 
 Prefer an environment-variable credential reference over storing a pasted key. Never put a key in an endpoint URL. See [privacy](Security-And-Privacy-Guide.md) and [compatibility](Compatibility.md).
 
-Provider changes preserve comments and unrelated configuration. A selected Codex profile receives model settings. Invalid files and conflicting edits stop the operation; snapshots preserve the prior configuration and manager settings. `cmgr recover` repairs an interrupted change when the files still match the recorded transaction. Review external conflicts before retrying.
+Provider changes preserve comments and unrelated configuration. Activation reads Codex's effective configuration and managed requirements in the current working directory, then verifies the requested model, connection, endpoint, authentication fields and controls after writing the base configuration. It commits manager state only after verification. This check sends no inference request and does not prove that a model can complete a coding task.
+
+Conflicting project or managed settings stop activation. Failed verification rolls back files that still match the recorded transaction; external edits are preserved. `cmgr recover` checks interrupted changes. Recovery records and their preimages must resolve inside the Codex home's backup directory and pass format/integrity checks before recovery uses them.
+
+Current Codex profiles use separate `NAME.config.toml` files selected with `codex --profile NAME`. Manager activation currently targets the base configuration; named profile activation and explicit migration remain pending. Legacy `profile`/`[profiles]` layouts stop activation with a migration message. They are not silently flattened or removed. See [official configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic).
 
 `tui.model_availability_nux` stores startup-notice counts, not model access or limits. A model's display name comes from catalog metadata; the desktop app can label a model without that metadata as Custom.
 

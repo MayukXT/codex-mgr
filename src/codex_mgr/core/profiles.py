@@ -10,7 +10,7 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from codex_mgr.config.schema import ProviderConfig
-from codex_mgr.utils.files import atomic_write, create_snapshot, mutation_lock, read_optional
+from codex_mgr.utils.files import atomic_write, create_snapshot, read_optional
 from codex_mgr.utils.paths import get_backups_dir, get_config_toml_path
 
 
@@ -184,15 +184,14 @@ def snapshot_configuration() -> None:
 
 
 def switch_active_provider(provider: ProviderConfig) -> tuple[bool, str]:
-    """Apply config only; application actions use activation.activate_provider."""
-    path = get_config_toml_path()
+    """Compatibility entry point using the same verified activation transaction."""
+    from codex_mgr.config.settings import load_settings
+    from codex_mgr.core.activation import apply_settings
+
     try:
-        with mutation_lock(path):
-            before = read_optional(path)
-            encoded = prepare_configuration(provider, before)
-            snapshot_configuration()
-            atomic_write(path, encoded, expected=before)
-        return True, f"Selected {provider.name}: {provider.default_model}"
+        settings = load_settings()
+        settings.providers[provider.id] = provider
+        return apply_settings(settings, activate_provider_id=provider.id)
     except ConfigurationError as exc:
         return False, str(exc)
     except (OSError, ValueError, RuntimeError):

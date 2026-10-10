@@ -6,7 +6,7 @@ Manage Codex CLI providers, models, and saved sessions from your terminal.
 
 ## Project status
 
-Compatibility and recovery work is underway for v1.1.0. Cross-provider resumption and protocol adapters still need complete workflow validation before this version can be recommended for everyday use. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
+Compatibility and recovery work is underway for v1.1.0. Named profile migration, cross-provider resumption and protocol adapters still need complete workflow validation before this version can be recommended for everyday use. See [compatibility](docs/wiki/Compatibility.md) for the current limits.
 
 ## Install from source
 
@@ -58,6 +58,8 @@ cmgr update --check
 ```
 
 `cmgr resume` activates the selected connection and model before launching Codex. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+
+Activation asks Codex to resolve configuration layers and managed requirements in the current working directory. It verifies the effective connection and model before saving the manager's active state. Conflicting project or managed settings stop the change; failed verification rolls back matching files and preserves external edits. Legacy `[profiles]` configurations require explicit migration and are preserved when activation stops.
 
 `cmgr start --provider my-api "INITIAL PROMPT"` uses the same selected credential and activation checks for a fresh session. Prompt text is passed as one literal argument to Codex. On Windows, supported npm command wrappers are resolved to the packaged native executable; unresolved shell wrappers require adding the native executable to PATH. Codex errors and cancellation return a nonzero status.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -14,13 +15,16 @@ from codex_mgr.config.settings import (
     save_settings,
     serialize_settings,
 )
+from codex_mgr.core.native_config import verify_after_activation, verify_before_activation
 from codex_mgr.core.profiles import (
     ConfigurationError,
     prepare_configuration,
     snapshot_configuration,
 )
 from codex_mgr.utils.files import FileConflictError, atomic_write, mutation_lock, read_optional
-from codex_mgr.utils.paths import get_backups_dir, get_cmgr_settings_path, get_config_toml_path
+from codex_mgr.utils.paths import get_cmgr_settings_path, get_codex_home, get_config_toml_path
+
+_STATES = frozenset({"prepared", "config_applied", "validated", "committed", "rolled_back"})
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -28,7 +32,49 @@ def _digest(data: bytes | None) -> str | None:
 
 
 def _journal(path: Path, record: dict) -> None:
+    _contained(path)
     atomic_write(path, json.dumps(record).encode("utf-8"))
+
+
+def _contained(path: Path) -> Path:
+    """Resolve before reading or writing recovery data, including linked preimages."""
+    root = get_codex_home()
+    backups = root / "backups"
+    backups.resolve().relative_to(root)
+    path.resolve().relative_to(backups.resolve())
+    return path
+
+
+def _unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Invalid activation recovery record.")
+        result[key] = value
+    return result
+
+
+def _read_record(path: Path) -> dict:
+    _contained(path)
+    if path.stat().st_size > 16_384:
+        raise ValueError("Activation recovery record exceeds the supported size.")
+    record = json.loads(path.read_bytes(), object_pairs_hook=_unique_pairs)
+    if not isinstance(record, dict) or not isinstance(record.get("state"), str):
+        raise ConfigurationError("Invalid activation recovery record.")
+    if record["state"] not in _STATES:
+        raise ValueError("Unknown activation recovery state.")
+    for name in ("config", "settings"):
+        for prefix in ("before", "after"):
+            key = f"{prefix}_{name}"
+            if key not in record or (
+                record[key] is not None
+                and (
+                    not isinstance(record[key], str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", record[key])
+                )
+            ):
+                raise ValueError("Invalid activation recovery digest.")
+    return record
 
 
 def _restore(path: Path, original: bytes | None, expected: bytes | None) -> None:
@@ -41,10 +87,10 @@ def _restore(path: Path, original: bytes | None, expected: bytes | None) -> None
 
 
 def _recover_journals() -> None:
-    folder = get_backups_dir() / "transactions"
+    folder = _contained(get_codex_home() / "backups" / "transactions")
     for path in sorted(folder.glob("*/journal.json")):
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = _read_record(path)
             if record["state"] in ("committed", "rolled_back"):
                 continue
             pairs = [
@@ -52,7 +98,9 @@ def _recover_journals() -> None:
                 ("settings", get_cmgr_settings_path()),
             ]
             current = {name: read_optional(target) for name, target in pairs}
-            if all(_digest(current[name]) == record[f"after_{name}"] for name, _ in pairs):
+            if record["state"] == "validated" and all(
+                _digest(current[name]) == record[f"after_{name}"] for name, _ in pairs
+            ):
                 record["state"] = "committed"
                 _journal(path, record)
                 continue
@@ -60,7 +108,7 @@ def _recover_journals() -> None:
             for name, _ in pairs:
                 old_hash = record[f"before_{name}"]
                 original = (
-                    (path.parent / f"before-{name}.bin").read_bytes()
+                    _contained(path.parent / f"before-{name}.bin").read_bytes()
                     if old_hash is not None
                     else None
                 )
@@ -117,9 +165,12 @@ def apply_settings(
             if settings._loaded and settings_before != settings._source_bytes:
                 raise FileConflictError("Settings changed; reload before activating.")
             config_after = prepare_configuration(target, config_before)
+            verify_before_activation(config_after)
             settings.active_provider_id = activate_provider_id
             settings_after = serialize_settings(settings)
-            transaction = get_backups_dir() / "transactions" / uuid.uuid4().hex
+            transaction = _contained(
+                get_codex_home() / "backups" / "transactions" / uuid.uuid4().hex
+            )
             record = {
                 "state": "prepared",
                 "before_config": _digest(config_before),
@@ -129,13 +180,22 @@ def apply_settings(
             }
             for name, data in (("config", config_before), ("settings", settings_before)):
                 if data is not None:
-                    atomic_write(transaction / f"before-{name}.bin", data, expected=None)
+                    atomic_write(
+                        _contained(transaction / f"before-{name}.bin"), data, expected=None
+                    )
             journal_path = transaction / "journal.json"
             _journal(journal_path, record)
             snapshot_configuration()
             try:
                 atomic_write(config_path, config_after, expected=config_before)
                 record["state"] = "config_applied"
+                _journal(journal_path, record)
+                verify_after_activation(config_after)
+                if read_optional(config_path) != config_after:
+                    raise FileConflictError(
+                        "Configuration changed during verification; it was preserved."
+                    )
+                record["state"] = "validated"
                 _journal(journal_path, record)
                 commit_settings(settings, expected=settings_before)
             except (OSError, ValueError, RuntimeError):
@@ -153,6 +213,8 @@ def apply_settings(
         message = "Activation failed. Check permissions and pending recovery before retrying."
     if (
         journal_path is not None
+        and record is not None
+        and record["state"] in {"validated", "committed"}
         and read_optional(config_path) == config_after
         and read_optional(settings_path) == settings_after
     ):

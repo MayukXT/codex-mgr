@@ -1,14 +1,15 @@
 """Unit tests for surgical config.toml merging and preservation."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 from codex_mgr.config.schema import ProviderConfig
 from codex_mgr.core.profiles import read_config_toml, switch_active_provider
+from codex_mgr.utils.paths import get_config_toml_path
 
 
 def test_switch_preserves_mcp_servers_and_hooks(tmp_path: Path):
-    mock_config = tmp_path / "config.toml"
+    mock_config = get_config_toml_path()
+    mock_config.parent.mkdir(parents=True)
     initial_toml = """
 model = "gpt-6-astra"
 model_reasoning_effort = "max"
@@ -38,18 +39,15 @@ sansFontSize = 16
         auth_type="bearer_token",
         auth_token="sk-mock-router-key",
         default_model="gpt-5.6-sol",
-        reasoning_effort="max"
+        reasoning_effort="max",
     )
 
-    with patch("codex_mgr.core.profiles.get_config_toml_path", return_value=mock_config), \
-         patch("codex_mgr.core.profiles.get_backups_dir", return_value=tmp_path / "backups"):
-        ok, msg = switch_active_provider(provider)
+    ok, msg = switch_active_provider(provider)
 
-    assert ok is True
+    assert ok is True, msg
 
     # Read back and verify
-    with patch("codex_mgr.core.profiles.get_config_toml_path", return_value=mock_config):
-        updated = read_config_toml()
+    updated = read_config_toml()
 
     # Provider and model updated
     assert updated["model"] == "gpt-5.6-sol"

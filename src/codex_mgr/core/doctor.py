@@ -86,6 +86,7 @@ def _storage_results() -> list[DiagnosticResult]:
             if not isinstance(state, str) or state not in {
                 "prepared",
                 "config_applied",
+                "validated",
                 "committed",
                 "rolled_back",
             }:

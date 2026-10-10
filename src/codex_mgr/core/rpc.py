@@ -20,7 +20,16 @@ class CodexRpcError(RuntimeError):
 class CodexReader:
     """One initialized stdio connection; no sessions, turns or writes are allowed."""
 
-    ALLOWED = frozenset({"model/list", "account/read", "config/read", "thread/list", "thread/read"})
+    ALLOWED = frozenset(
+        {
+            "model/list",
+            "account/read",
+            "config/read",
+            "configRequirements/read",
+            "thread/list",
+            "thread/read",
+        }
+    )
 
     def __init__(self, *, overrides: Sequence[str] = (), command=None, timeout=10):
         binary = find_codex_binary() if command is None else None
