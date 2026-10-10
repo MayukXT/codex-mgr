@@ -111,15 +111,21 @@ cmgr
 
 ---
 
-## 🔌 Supported Provider Types
+## 🔌 Supported Providers & Platforms
 
-Codex Manager connects to any provider architecture supported by Codex CLI or compatible wire adapters:
+Codex Manager includes pre-configured connection templates for leading AI providers, routers, and local runtimes (without hardcoding transient model names):
 
-* **Official OpenAI:** Managed sign-in and direct API key authentication.
-* **Anthropic Services:** Protocol-adapted transport for native thinking, tool streaming, and completions.
-* **Universal Gateways & Routers:** Multi-model routing gateways, custom proxy endpoints, and load balancers.
-* **Third-Party APIs:** Direct provider endpoints speaking OpenAI-compatible protocols.
-* **Local & Self-Hosted:** Offline, private inference engines running on your local machine (e.g., local server runners and offline gateways).
+* **OpenAI & ChatGPT:** Official ChatGPT OAuth sign-in and direct OpenAI API keys.
+* **Anthropic:** Direct Claude API connection powered by the built-in Messages protocol adapter.
+* **OpenRouter:** Universal multi-model gateway and routing endpoint.
+* **OpenCode Zen:** High-speed proxy service with automatic protocol negotiation.
+* **AgentRouter:** Dedicated developer routing proxy for Codex CLI.
+* **NVIDIA NIM:** GPU-accelerated enterprise inference microservices.
+* **DeepSeek:** Direct API integration for high-efficiency reasoning models.
+* **Groq:** Ultra-low-latency LPU inference endpoints.
+* **Google Gemini:** High-throughput API access via OpenAI compatibility endpoints.
+* **Local & Offline (Ollama & LM Studio):** Private, self-hosted models running locally on your hardware.
+* **Custom Endpoints:** Any custom base URL supporting OpenAI-compatible or Codex Responses protocols.
 
 ---
 
