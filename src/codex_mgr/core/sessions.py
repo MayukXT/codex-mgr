@@ -11,6 +11,7 @@ from pathlib import Path
 from codex_mgr.core.rollouts import (
     canonical_session_id,
     read_session_metadata,
+    thread_id_from_filename,
 )
 from codex_mgr.core.rpc import CodexReader, CodexRpcError
 from codex_mgr.utils.paths import get_codex_home, get_session_index_path, get_sessions_dir
@@ -33,6 +34,23 @@ class SessionItem:
     duplicate_paths: tuple[Path, ...] = ()
 
     def require_rollout(self) -> Path:
+        if self.rollout_path is not None and self.rollout_path.exists():
+            metadata = read_session_metadata(self.rollout_path)
+            if metadata.canonical_history:
+                from codex_mgr.core.history_lineage import LineageLimits, index_history_rollouts
+
+                index = index_history_rollouts(get_codex_home(), LineageLimits().directory_entries)
+                current = tuple(
+                    path
+                    for paths in index.values()
+                    for path in paths
+                    if thread_id_from_filename(path) == self.id
+                )
+                if len(current) > 1 or self.duplicate_paths:
+                    return _native_selected_rollout(self.id, current)
+                if len(current) == 1:
+                    return current[0]
+                raise FileNotFoundError("The canonical session has no current rollout file.")
         if self.duplicate_paths:
             return _native_selected_rollout(self.id, self.duplicate_paths)
         if self.rollout_path is None:

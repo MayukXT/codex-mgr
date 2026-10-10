@@ -37,6 +37,12 @@ def canonical_session_id(value: object) -> str:
     return str(UUID(value))
 
 
+def thread_id_from_filename(path: Path) -> str | None:
+    """The logical namespace in a native original/replacement rollout name."""
+    match = _FILENAME.fullmatch(path.name)
+    return canonical_session_id(match["id"]) if match else None
+
+
 def rollout_id_from_filename(path: Path) -> str | None:
     """Read immutable rollout identity, including native replacement filenames."""
     match = _FILENAME.fullmatch(path.name)

@@ -48,6 +48,21 @@ def test_cli_resume_uses_shared_activation_conversion_service():
     resume.assert_called_once_with(item, "fixture", allow_reasoning_loss=True, settings=settings)
 
 
+def test_cli_discloses_successful_independent_session_identity():
+    settings = type("Settings", (), {"active_provider_id": "fixture"})()
+    item = SessionItem("00000000-0000-4000-8000-000000000001", "Synthetic", "", "", None, "old")
+    new_id = "00000000-0000-4000-8000-000000000002"
+    message = f"Independent session: {new_id}. Original session: {item.id} (preserved)."
+    with (
+        patch("codex_mgr.cli.load_settings", return_value=settings),
+        patch("codex_mgr.cli.find_session_by_id_or_title", return_value=item),
+        patch("codex_mgr.cli.resume_session", return_value=(0, message)),
+        console.capture() as captured,
+    ):
+        assert main(["resume", item.id]) == 0
+    assert new_id in captured.get() and item.id in captured.get()
+
+
 def test_cli_restore_does_not_print_filesystem_exception_paths():
     item = SessionItem(
         "00000000-0000-0000-0000-000000000001",

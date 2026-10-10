@@ -106,7 +106,8 @@ def test_native_revert_keeps_thread_identity_when_rollout_identity_changes(tmp_p
     with upstream() as (provider, _, _), AdapterRuntime(provider) as runtime:
         identity = launch(tmp_path, runtime)[0]["thread_id"]
         launch(tmp_path, runtime, session=identity)
-        source = find_session_by_id_or_title(identity).require_rollout()
+        selected_session = find_session_by_id_or_title(identity)
+        source = selected_session.require_rollout()
         records = [json.loads(raw) for raw in source.read_bytes().splitlines()]
         turn_id = next(
             record["payload"]["turn_id"]
@@ -127,6 +128,7 @@ def test_native_revert_keeps_thread_identity_when_rollout_identity_changes(tmp_p
         assert metadata.rollout_id != identity
         assert source.exists()
         assert find_session_by_id_or_title(identity).require_rollout() == replacement
+        assert selected_session.require_rollout() == replacement
         assert launch(tmp_path, runtime, session=identity)[-1]["type"] == "turn.completed"
 
 
@@ -151,6 +153,86 @@ def test_native_independent_materialized_history_preserves_source_and_resumes(
         assert resumed[0]["thread_id"] == imported_id
         assert source.read_bytes() == original
         assert imported.read_bytes().startswith(editor.render().encode() + b"\n" + suffix)
+        assert len(received) == 2
+        assert any(
+            message["role"] == "assistant"
+            and message["content"] == [{"type": "text", "text": "  Exact 🌙\n"}]
+            for message in received[-1][2]["messages"]
+        )
+
+
+@pytest.mark.parametrize("representation", ["plain", "compressed-archive"])
+def test_native_shared_canonical_conversion_resumes_disclosed_copy(
+    representation, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    with upstream() as (provider, received, _), AdapterRuntime(provider) as runtime:
+        identity = launch(tmp_path, runtime)[0]["thread_id"]
+        original = find_session_by_id_or_title(identity)
+        source = original.require_rollout()
+        if representation == "compressed-archive":
+            archived = get_codex_home() / "archived_sessions" / source.name
+            archived.parent.mkdir()
+            source.rename(archived)
+            source = archived.with_suffix(".jsonl.zst")
+            source.write_bytes(
+                zstandard.ZstdCompressor(write_checksum=True).compress(archived.read_bytes())
+            )
+            archived.unlink()
+            original = find_session_by_id_or_title(identity, include_archived=True)
+            assert original.require_rollout() == source
+        raw_original = source.read_bytes()
+        monkeypatch.setenv("CMGR_NATIVE_FIXTURE_KEY", runtime.token)
+        work = tmp_path / "workspace"
+        monkeypatch.chdir(work)
+        target = ProviderConfig(
+            id="target",
+            codex_provider_id="native_target",
+            name="Synthetic target",
+            base_url=runtime.base_url,
+            default_model=provider.default_model,
+            auth_type="env_var",
+            auth_token="$CMGR_NATIVE_FIXTURE_KEY",
+            reasoning_effort="none",
+        )
+        save_settings(CmgrSettings(active_provider_id=target.id, providers={target.id: target}))
+        preview = resume.preview_resume(original, target.id)
+        assert preview.creates_copy and preview.encrypted_items == 0
+        completed = []
+        binary = find_codex_binary()
+
+        def native_exec(*, session_id):
+            assert session_id != identity
+            assert read_history_copy(session_id).state == "published"
+            command = [
+                str(binary),
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--ignore-rules",
+                "--sandbox",
+                "read-only",
+                "-C",
+                str(work),
+                "resume",
+                session_id,
+                "--",
+                "Use the synthetic provider response and report its exact text.",
+            ]
+            events = _execute_native(tmp_path, command, os.environ.copy(), session=session_id)
+            assert events[0]["thread_id"] == session_id
+            assert events[-2]["item"]["text"] == "  Exact 🌙\n"
+            completed.append(session_id)
+            return 0
+
+        monkeypatch.setattr(resume, "launch_codex", native_exec)
+        code, message = resume.resume_session(
+            original, target.id, expected_digest=preview.session_digest
+        )
+        assert code == 0 and completed[0] in message and identity in message
+        assert "Independent session" in message and "preserved" in message
+        assert source.read_bytes() == raw_original
+        assert load_settings().active_provider_id == target.id
         assert len(received) == 2
         assert any(
             message["role"] == "assistant"

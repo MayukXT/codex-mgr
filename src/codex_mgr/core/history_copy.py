@@ -31,6 +31,7 @@ from codex_mgr.core.rollouts import (
     canonical_session_id,
     read_session_metadata,
     rollout_id_from_filename,
+    thread_id_from_filename,
 )
 from codex_mgr.core.session_lock import session_write_guards
 from codex_mgr.utils.files import FileConflictError, atomic_write, is_linked_path
@@ -345,6 +346,14 @@ def _identity_exists(identity, home, limits):
     return any(identity in path.name for paths in index.values() for path in paths)
 
 
+def _root_rollouts(index, identity):
+    return frozenset(
+        immutable
+        for immutable, paths in index.items()
+        if any(thread_id_from_filename(path) == identity for path in paths)
+    )
+
+
 def _publish(folder, record, encoded, target, home, limits):
     candidate = _safe(folder / "candidate.jsonl", home)
     if target.exists():
@@ -432,15 +441,17 @@ class PreparedHistoryCopy:
     candidate_size: int = field(repr=False)
     provider: str = field(repr=False)
     limits: HistoryCopyLimits = field(repr=False)
+    root_rollouts: frozenset[str] = field(repr=False)
     _snapshotted: bool = field(default=False, repr=False)
 
     def _current(self):
         if get_codex_home() != self.lineage.home:
             raise FileConflictError("The active history home changed; prepare the copy again.")
         root = self.lineage.segments[-1].metadata.rollout_id
-        candidates = index_history_rollouts(
-            self.lineage.home, self.limits.lineage.directory_entries
-        ).get(root, [])
+        index = index_history_rollouts(self.lineage.home, self.limits.lineage.directory_entries)
+        if _root_rollouts(index, self.original_id) != self.root_rollouts:
+            raise FileConflictError("Canonical root selection changed; review the session again.")
+        candidates = index.get(root, [])
         if len(candidates) != 1:
             raise FileConflictError("The selected history source moved ambiguously or disappeared.")
         current = resolve_history_lineage(
@@ -556,6 +567,11 @@ def prepare_history_copy(
     limits = limits or HistoryCopyLimits()
     home = get_codex_home()
     lineage = resolve_history_lineage(path, home=home, limits=limits.lineage)
+    root_rollouts = _root_rollouts(
+        index_history_rollouts(home, limits.lineage.directory_entries), lineage.thread_id
+    )
+    if lineage.segments[-1].metadata.rollout_id not in root_rollouts:
+        raise HistoryReadError("Canonical root filename does not match its logical session.")
     expected = lineage.fingerprint()
     identity = str(uuid4())
     if identity == lineage.thread_id:
@@ -620,4 +636,5 @@ def prepare_history_copy(
             size,
             target_provider_id,
             limits,
+            root_rollouts,
         )

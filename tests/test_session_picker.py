@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from codex_mgr.core.resume import ResumePreview
 from codex_mgr.core.sessions import SessionCatalog, SessionItem
 from codex_mgr.tui.session_picker import interactive_resume_session, pick_session
@@ -102,3 +104,34 @@ def test_tui_refusal_does_not_activate_or_convert():
         confirm.return_value.execute.return_value = False
         interactive_resume_session()
     resume.assert_not_called()
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_tui_discloses_independent_identity_before_confirmation_and_after_launch(accepted):
+    original = item(1)
+    new_id = "00000000-0000-4000-8000-000000000002"
+    message = f"Independent session: {new_id}. Original session: {original.id} (preserved)."
+    with (
+        patch("codex_mgr.tui.session_picker.pick_session", return_value=original),
+        patch("codex_mgr.tui.session_picker.show_session_details"),
+        patch("codex_mgr.tui.session_picker.load_settings", return_value=object()),
+        patch(
+            "codex_mgr.tui.session_picker.preview_resume",
+            return_value=ResumePreview("target", "digest", 1, 0, True),
+        ),
+        patch("codex_mgr.tui.session_picker.console") as console,
+        patch("codex_mgr.tui.session_picker.resume_session", return_value=(0, message)) as resume,
+        patch("codex_mgr.tui.session_picker.inquirer.confirm") as confirm,
+    ):
+
+        def answer(**kwargs):
+            assert kwargs["default"] is False
+            assert kwargs["message"] == "Save a recovery copy and resume?"
+            assert any(original.id in call.args[0] for call in console.print.call_args_list)
+            return confirm.return_value
+
+        confirm.side_effect = answer
+        confirm.return_value.execute.return_value = accepted
+        interactive_resume_session()
+    assert resume.call_count == int(accepted)
+    assert any(new_id in call.args[0] for call in console.print.call_args_list) == accepted

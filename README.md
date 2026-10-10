@@ -30,7 +30,7 @@ For development, install with `python -m pip install -e ".[dev]"`.
 - Diagnostic checks and local backup tools.
 - A session bridge that changes provider metadata and removes selected encrypted reasoning fields.
 
-The bridge changes saved session files. It validates JSONL history and saves a checksummed snapshot before applying a conversion. Removing encrypted reasoning loses information that cannot be reconstructed from readable summaries. Encrypted-only compaction or communication cannot be converted safely and requires the original connection.
+Legacy conversion changes saved session files after validation and a checksummed snapshot. Canonical conversion preserves source files and publishes an independent copy after validating frozen ancestry and saving complete recovery sources. Removing encrypted reasoning loses information that cannot be reconstructed from readable summaries. Encrypted-only compaction or communication cannot be converted safely and requires the original connection.
 
 ## Commands
 
@@ -59,7 +59,7 @@ cmgr --version
 cmgr update --check
 ```
 
-`cmgr resume` activates the selected connection and model before launching Codex. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
+`cmgr resume` activates the selected connection and model before launching Codex. Changing a canonical paginated session to a different Responses connection creates an independent session with a new UUID and preserves the original history and indexes. The menu previews this change; CLI and menu output identify the new and original sessions. Conversion that removes encrypted reasoning requires `--allow-reasoning-loss`, or confirmation in the menu. `cmgr restore SESSION_UUID --snapshot FILENAME` selects a listed legacy snapshot and saves current content before restoring it. See [session recovery](docs/wiki/Recovery.md) for supported history formats and writer coordination.
 
 Activation asks Codex to resolve configuration layers and managed requirements in the current working directory. It verifies the effective connection and model before saving the manager's active state. Conflicting project or managed settings stop the change; failed verification rolls back matching files and preserves external edits. Legacy `[profiles]` configurations require explicit migration and are preserved when activation stops.
 

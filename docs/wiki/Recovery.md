@@ -50,7 +50,7 @@ These commands print local session metadata. JSON output includes titles, UUIDs,
 
 ## Convert and restore
 
-Session conversion changes saved Codex rollout files. Removing encrypted reasoning removes information that cannot be reconstructed from visible conversation text.
+Legacy conversion changes saved Codex rollout files. Canonical conversion creates an independent session while preserving the original store. Removing encrypted reasoning removes information that cannot be reconstructed from visible conversation text.
 
 Resume validates the selected connection, exact model and required credentials before changing a session. It uses the Codex connection ID from configuration, which can differ from the manager's friendly connection ID. Invalid or truncated JSONL stops conversion before any session replacement.
 
@@ -59,9 +59,11 @@ cmgr resume <session-uuid> --to <connection-id>
 cmgr resume <session-uuid> --to <connection-id> --allow-reasoning-loss
 ```
 
-The second form explicitly allows removal of encrypted reasoning. Readable summaries remain. The menu previews the conversion and asks before removing encrypted items. Encrypted-only compaction, messages and tool results have no portable plaintext replacement, so conversion stops and preserves the source. Paginated or inherited history stores require Codex's canonical store workflow for conversion; direct resume with the original connection remains available.
+The second form explicitly allows removal of encrypted reasoning. Readable summaries remain. The menu previews the conversion and asks before removing encrypted items. Encrypted-only compaction, messages and tool results have no portable plaintext replacement, so conversion stops and preserves the source.
 
-Conversion preserves record order and every source byte outside the selected metadata/reasoning values. Unknown records, images, function calls and tool output are retained. This establishes file preservation, not successful inference on every endpoint.
+Changing a canonical paginated session to a different Responses connection validates its complete frozen ancestry, including compressed or archived source segments. It saves complete raw sources and the prepared candidate under `backups/history-copies/<new-uuid>/`, then publishes an independent legacy session. The original files and their native indexes stay intact. CLI and menu output identify both UUIDs; the menu explains the new identity before confirmation. A changed preview, active source writer, newly replaced root or unsafe storage stops publication. Native configuration checks run outside the history writer coordinator. A failed activation or publication can leave a prepared recovery bundle; its UUID is reported. If snapshot verification was interrupted, output labels the UUID as a recovery attempt, without claiming that a valid bundle exists. Inventory and restore commands for these bundles are still pending, so keep them private and retain the original store.
+
+Legacy conversion preserves record order and every source byte outside the selected metadata/reasoning values. Unknown legacy records, images, function calls and tool output are retained. Canonical copies validate supported envelopes and inherited ordinal/byte cutoffs; unrelated contributing bytes remain exact apart from the new root metadata and reviewed reasoning changes. This establishes file preservation, not successful inference on every endpoint.
 
 Codex 0.159.0 writer locks coordinate conversion and restore with the selected session's native writer. An active writer blocks the operation. Older Codex versions and other editors must be stopped before editing saved history because they do not share this protocol. Expected-content checks also stop replacement when a file changed during preparation.
 

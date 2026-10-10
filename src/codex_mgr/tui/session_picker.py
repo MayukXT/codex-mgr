@@ -147,12 +147,20 @@ def interactive_resume_session(
         return
     if preview.changed_records:
         console.print(f"Target connection: {preview.connection_id}", markup=False)
+        if preview.creates_copy:
+            console.print(f"Original session: {session.id}", markup=False)
+            print_warning(
+                "Creates an independent session with a new UUID. Original history is retained."
+            )
         if preview.encrypted_items:
             print_warning(
                 f"Conversion removes {preview.encrypted_items} encrypted items. Readable summaries remain; the original is saved in a recovery snapshot."
             )
         if not inquirer.confirm(
-            message="Save a snapshot, convert and resume?", default=False
+            message="Save a recovery copy and resume?"
+            if preview.creates_copy
+            else "Save a snapshot, convert and resume?",
+            default=False,
         ).execute():
             return
     elif select_menu("Session:", [Choice("resume", "Resume"), Choice(None, "Back")]) != "resume":
@@ -166,3 +174,5 @@ def interactive_resume_session(
     )
     if code:
         print_error(message)
+    elif preview.creates_copy:
+        console.print(message, markup=False)

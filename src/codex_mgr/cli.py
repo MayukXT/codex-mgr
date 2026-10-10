@@ -295,6 +295,8 @@ def _main(argv: list[str] | None = None) -> int:
         )
         if code:
             print_error(message)
+        else:
+            console.print(message, markup=False)
         return code
 
     elif args.command == "switch":

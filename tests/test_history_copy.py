@@ -103,6 +103,25 @@ def test_frozen_copy_snapshots_every_source_and_keeps_private_candidate_independ
     assert not (get_codex_home() / "cmgr.json").exists()
 
 
+@pytest.mark.parametrize("snapshotted", [False, True])
+def test_new_replacement_root_refuses_publication_even_if_old_fingerprint_matches(snapshotted):
+    path, _ = history()
+    original = path.read_bytes()
+    with prepare_history_copy(path, "target") as prepared:
+        if snapshotted:
+            prepared.snapshot()
+        replacement, _ = source(
+            get_codex_home(), identity=prepared.original_id, revision=str(uuid4())
+        )
+        assert prepared.lineage.fingerprint() == prepared.expected_fingerprint
+        with pytest.raises(FileConflictError, match="root selection changed"):
+            prepared.publish()
+        assert not prepared.target.exists()
+        assert path.read_bytes() == original and replacement.exists()
+    assert not (get_codex_home() / "config.toml").exists()
+    assert not (get_codex_home() / "cmgr.json").exists()
+
+
 def test_ancestor_move_compression_and_later_append_preserve_prepared_commitment():
     parent, inherited = history()
     root, _ = history(base=cutoff(parent, inherited))
