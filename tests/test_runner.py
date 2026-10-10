@@ -39,6 +39,18 @@ def test_invalid_uuid_never_launches(binary, monkeypatch):
     run.assert_not_called()
 
 
+def test_scoped_environment_reaches_child_without_global_mutation(binary, monkeypatch):
+    run = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(subprocess, "run", run)
+    environment = {"CMGR_SYNTHETIC_OWNER": "synthetic-local-token"}
+    assert runner.launch_codex(SID, "exact prompt", environment=environment) == 0
+    run.assert_called_once_with(
+        [str(binary), "resume", SID, "--", "exact prompt"],
+        check=False,
+        env=environment,
+    )
+
+
 @pytest.mark.parametrize("returncode,expected", [(0, 0), (7, 7), (-2, 130), (-15, 143)])
 def test_native_exit_or_signal_is_preserved(returncode, expected, binary, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *_, **__: SimpleNamespace(returncode=returncode))

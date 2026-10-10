@@ -22,10 +22,17 @@ class NativeConfiguration:
     requirements: dict = field(repr=False)
 
 
-def read_native_configuration(*, cwd: Path | None = None) -> NativeConfiguration:
+def read_native_configuration(
+    *, cwd: Path | None = None, overrides=(), environment=None
+) -> NativeConfiguration:
     """Read policy and layers without sending an inference request or CLI secrets."""
     try:
-        with CodexReader() as reader:
+        options = {}
+        if overrides:
+            options["overrides"] = overrides
+        if environment is not None:
+            options["environment"] = environment
+        with CodexReader(**options) as reader:
             result = reader.request(
                 "config/read", {"includeLayers": True, "cwd": str((cwd or Path.cwd()).resolve())}
             )
@@ -69,7 +76,13 @@ def _selection(encoded: bytes) -> dict[tuple[str, ...], object]:
     # Omitted controls mean inherit Codex's effective value, not require null.
     values = {
         (key,): data[key]
-        for key in ("model", "model_reasoning_effort", "model_context_window")
+        for key in (
+            "model",
+            "model_reasoning_effort",
+            "model_reasoning_summary",
+            "model_context_window",
+            "web_search",
+        )
         if key in data
     }
     selected = data.get("model_provider") or "openai"
@@ -95,6 +108,9 @@ def _selection(encoded: bytes) -> dict[tuple[str, ...], object]:
         if selected == "openai" and key not in table:
             continue
         values[("model_providers", selected, key)] = table.get(key)
+    for key in ("supports_websockets", "request_max_retries", "stream_max_retries"):
+        if key in table:
+            values[("model_providers", selected, key)] = table[key]
     return values
 
 
@@ -154,10 +170,12 @@ def _check_policy(snapshot: NativeConfiguration, values: dict) -> None:
         raise ConfigurationError("Managed policy does not permit this login method.")
 
 
-def verify_before_activation(encoded: bytes, *, cwd: Path | None = None) -> None:
+def verify_before_activation(
+    encoded: bytes, *, cwd: Path | None = None, snapshot: NativeConfiguration | None = None
+) -> None:
     """Reject known layer/policy conflicts before snapshots or configuration writes."""
     values = _selection(encoded)
-    snapshot = read_native_configuration(cwd=cwd)
+    snapshot = snapshot or read_native_configuration(cwd=cwd)
     _check_policy(snapshot, values)
     for keys, wanted in values.items():
         actual = _get(snapshot.config, keys)
@@ -170,10 +188,17 @@ def verify_before_activation(encoded: bytes, *, cwd: Path | None = None) -> None
             )
 
 
-def verify_after_activation(encoded: bytes, *, cwd: Path | None = None) -> None:
+def verify_after_activation(
+    encoded: bytes, *, cwd: Path | None = None, overrides=(), environment=None
+) -> None:
     """Do not commit manager state unless the effective selection matches the write."""
     values = _selection(encoded)
-    snapshot = read_native_configuration(cwd=cwd)
+    options = {"cwd": cwd}
+    if overrides:
+        options["overrides"] = overrides
+    if environment is not None:
+        options["environment"] = environment
+    snapshot = read_native_configuration(**options)
     _check_policy(snapshot, values)
     for keys, wanted in values.items():
         actual = _get(snapshot.config, keys)

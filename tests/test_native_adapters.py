@@ -10,6 +10,7 @@ from test_adapter_runtime import synthetic_loopback_http, upstream  # noqa: F401
 from test_streaming_codecs import block, chat, delta, finish, start, stop, wire
 
 from codex_mgr.config.schema import ModelInfo, ProviderConfig
+from codex_mgr.core.adapters.launch import AdapterLaunch, adapter_connection_id
 from codex_mgr.core.adapters.runtime import AdapterRuntime
 from codex_mgr.core.catalog import catalog_document
 from codex_mgr.utils.paths import find_codex_binary, get_codex_home
@@ -100,6 +101,10 @@ def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False):
     command += ["--", "Use the synthetic provider response and report its exact text."]
     environment = os.environ.copy()
     environment["CMGR_NATIVE_FIXTURE_KEY"] = runtime.token
+    return _execute_native(tmp_path, command, environment, session=session)
+
+
+def _execute_native(tmp_path, command, environment, *, session=None):
     output_path = tmp_path / ("resume.jsonl" if session else "fresh.jsonl")
     errors_path = tmp_path / "stderr.txt"
     owner = OwnedBackgroundProcess(
@@ -129,6 +134,73 @@ def launch(tmp_path, runtime, *, session=None, writable=False, reasoning=False):
     assert result["returncode"] == 0, "Native synthetic adapter execution did not complete."
     assert events[-1]["type"] == "turn.completed"
     return events
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages"])
+def test_native_verified_launch_overrides_preserve_original_configuration(
+    protocol, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SYNTHETIC_UPSTREAM_KEY", "synthetic-key")
+    home = get_codex_home()
+    home.mkdir()
+    work = tmp_path / "workspace"
+    work.mkdir()
+    config = home / "config.toml"
+    config.write_text(
+        tomlkit.dumps(
+            {
+                "model": "synthetic-original",
+                "cli_auth_credentials_store": "file",
+                "projects": {str(work): {"trust_level": "trusted"}},
+                "features": {
+                    "plugins": False,
+                    "recommended_plugins": False,
+                    "remote_plugin": False,
+                    "remote_models": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = config.read_bytes()
+    binary = find_codex_binary()
+    assert binary is not None
+    with upstream(protocol) as (provider, received, _):
+        identity = None
+        for session in (None, "resume"):
+            with AdapterLaunch(provider, cwd=work) as scope:
+                command = [
+                    str(binary),
+                    "exec",
+                    "--json",
+                    "--skip-git-repo-check",
+                    "--ignore-rules",
+                    "--sandbox",
+                    "read-only",
+                    "-C",
+                    str(work),
+                ]
+                if session:
+                    assert identity is not None
+                    command.extend(["resume", identity])
+                # Global config overrides must also be accepted after the resume ID.
+                command.extend(scope.arguments)
+                command.extend(
+                    ["--", "Use the synthetic provider response and report its exact text."]
+                )
+                events = _execute_native(tmp_path, command, scope.environment, session=session)
+                if not session:
+                    identity = events[0]["thread_id"]
+                assert events[-2]["item"]["text"] == "  Exact 🌙\n"
+                assert config.read_bytes() == original
+                rollouts = list((home / "sessions").rglob("*.jsonl"))
+                assert len(rollouts) == 1
+                header = json.loads(rollouts[0].read_text(encoding="utf-8").splitlines()[0])
+                assert header["payload"]["model_provider"] == adapter_connection_id(provider)
+        assert len(received) == 2
+        assert all(request[2]["model"] == provider.default_model for request in received)
+        assert config.read_bytes() == original
+        assert not (home / "cmgr.json").exists()
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages"])

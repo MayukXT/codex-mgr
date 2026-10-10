@@ -24,7 +24,7 @@ def isolated_codex_home(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def synthetic_native_configuration(request, monkeypatch):
     """Default tests model native user-layer reads; native contracts use the binary."""
-    if request.node.path.name == "test_native_codex.py":
+    if request.node.path.name in {"test_native_codex.py", "test_native_adapters.py"}:
         return
     from codex_mgr.core import native_config
     from codex_mgr.core.profiles import parse_configuration

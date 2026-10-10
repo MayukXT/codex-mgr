@@ -31,7 +31,9 @@ class CodexReader:
         }
     )
 
-    def __init__(self, *, overrides: Sequence[str] = (), command=None, timeout=10):
+    def __init__(
+        self, *, overrides: Sequence[str] = (), command=None, timeout=10, environment=None
+    ):
         binary = find_codex_binary() if command is None else None
         if command is None and binary is None:
             raise CodexRpcError("Codex CLI is unavailable.")
@@ -45,7 +47,8 @@ class CodexReader:
         self.messages = queue.Queue(maxsize=128)
         self._closing = threading.Event()
         try:
-            self._owner = OwnedBackgroundProcess(args)
+            options = {"env": environment} if environment is not None else {}
+            self._owner = OwnedBackgroundProcess(args, **options)
         except (BackgroundProcessError, OSError, ValueError) as exc:
             raise CodexRpcError("Codex app-server could not start safely.") from exc
         self.process = self._owner.process

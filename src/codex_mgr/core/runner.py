@@ -13,6 +13,8 @@ def launch_codex(
     session_id: str | None = None,
     prompt: str | None = None,
     extra_args: list[str] | None = None,
+    *,
+    environment: dict[str, str] | None = None,
 ) -> int:
     """Launch Codex with the current terminal inherited; never interpolate a shell."""
     binary = find_codex_binary()
@@ -37,7 +39,10 @@ def launch_codex(
         # -- keeps a leading dash in a prompt from becoming a CLI option.
         command.extend(["--", prompt])
     try:
-        result = subprocess.run(command, check=False)
+        options = {}
+        if environment is not None:
+            options["env"] = environment
+        result = subprocess.run(command, check=False, **options)
         return result.returncode if result.returncode >= 0 else 128 - result.returncode
     except KeyboardInterrupt:
         return 130
