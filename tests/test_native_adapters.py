@@ -26,8 +26,9 @@ from codex_mgr.core.history_lineage import resolve_history_lineage
 from codex_mgr.core.history_stream import iter_history_records
 from codex_mgr.core.rollouts import read_session_metadata
 from codex_mgr.core.rpc import CodexReader
+from codex_mgr.core.session_lock import session_write_guards
 from codex_mgr.core.sessions import find_session_by_id_or_title
-from codex_mgr.utils.files import create_snapshot
+from codex_mgr.utils.files import FileConflictError, create_snapshot
 from codex_mgr.utils.json_edits import JsonEdits
 from codex_mgr.utils.paths import find_codex_binary, get_backups_dir, get_codex_home
 from codex_mgr.utils.processes import OwnedBackgroundProcess
@@ -214,6 +215,15 @@ def test_native_nested_lineage_materializes_frozen_prefixes_and_resumes(
         root = find_session_by_id_or_title(root_id).require_rollout()
         lineage = resolve_history_lineage(root)
         assert len(lineage.segments) == 3
+        with SyntheticWriter(environment=environment) as writer:
+            writer.request("thread/resume", {"threadId": parent_id})
+            with (
+                pytest.raises(FileConflictError),
+                session_write_guards(
+                    (segment.metadata.id, segment.path) for segment in lineage.segments
+                ),
+            ):
+                pytest.fail("An active native ancestor must prevent coordinated publication.")
         if representation.endswith("compressed-archive"):
             for index, segment in enumerate(lineage.segments[:-1]):
                 source = segment.path
@@ -230,7 +240,12 @@ def test_native_nested_lineage_materializes_frozen_prefixes_and_resumes(
             assert lineage.segments[0].path.parent.name == "archived_sessions"
             assert all(segment.path.name.endswith(".zst") for segment in lineage.segments[:-1])
         originals = {segment.path: segment.path.read_bytes() for segment in lineage.segments}
-        records = list(lineage.iter_records())
+        expected = lineage.fingerprint()
+        with session_write_guards(
+            (segment.metadata.id, segment.path) for segment in lineage.segments
+        ):
+            assert lineage.fingerprint() == expected
+            records = list(lineage.iter_records())
         metadata = JsonEdits(records[0].decode())
         imported_id = str(uuid4())
         metadata.set(("payload", "id"), imported_id)

@@ -249,6 +249,45 @@ def test_compaction_window_and_parallel_metadata_records_remain_exact(tmp_path):
     ]
 
 
+def test_fingerprint_survives_compression_archive_and_unrelated_ancestor_tail(tmp_path):
+    parent, ancestor = source(tmp_path)
+    root, _ = source(tmp_path, base=cutoff(parent, ancestor))
+    expected = resolve_history_lineage(root, home=tmp_path).fingerprint()
+    parent.write_bytes(parent.read_bytes() + b"synthetic-irrelevant-later-tail\n")
+    assert resolve_history_lineage(root, home=tmp_path).fingerprint() == expected
+    parent = compress(parent)
+    archive = tmp_path / "archived_sessions"
+    archive.mkdir()
+    parent.rename(archive / parent.name)
+    root = compress(root)
+    assert resolve_history_lineage(root, home=tmp_path).fingerprint() == expected
+
+
+@pytest.mark.parametrize("changed", ["root", "ancestor", "ancestor-metadata"])
+def test_fingerprint_detects_every_changed_contributing_range(tmp_path, changed):
+    parent, ancestor = source(tmp_path)
+    root, _ = source(tmp_path, base=cutoff(parent, ancestor))
+    expected = resolve_history_lineage(root, home=tmp_path).fingerprint()
+    path = root if changed == "root" else parent
+    raw = path.read_bytes()
+    if changed == "ancestor-metadata":
+        raw = raw.replace(b"2026-01-01T00:00:00Z", b"2026-01-02T00:00:00Z")
+    else:
+        raw = raw.replace(b"Text", b"Word")
+    assert raw != path.read_bytes()
+    path.write_bytes(raw)
+    assert resolve_history_lineage(root, home=tmp_path).fingerprint() != expected
+
+
+def test_fingerprint_is_not_returned_for_unvalidated_history(tmp_path):
+    root, records = source(tmp_path)
+    root.write_bytes(b"".join(records) + b"synthetic-private-invalid-tail\n")
+    lineage = resolve_history_lineage(root, home=tmp_path)
+    with pytest.raises(LineageError) as caught:
+        lineage.fingerprint()
+    assert "synthetic-private" not in str(caught.value)
+
+
 def test_compressed_root_tail_requires_complete_integrity(tmp_path):
     root, records = source(tmp_path, count=0)
     compressor = zstandard.ZstdCompressor(write_checksum=True)

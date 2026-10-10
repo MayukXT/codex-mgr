@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Iterator
 from contextlib import closing
@@ -89,6 +91,29 @@ class HistoryLineage:
     @property
     def thread_id(self):
         return self.segments[-1].metadata.id
+
+    def fingerprint(self) -> str:
+        """Commit to identities, metadata, cutoffs and exact contributing bytes.
+
+        Paths and compression representations are excluded so a native archive
+        or compression step preserves the same history commitment. Re-resolve
+        moved sources first; exhaust validation before comparing the result.
+        """
+        bindings = [
+            [
+                segment.metadata.rollout_id,
+                segment.metadata.id,
+                hashlib.sha256(segment.metadata_prefix).hexdigest(),
+                [segment.end.ordinal, segment.end.byte_offset] if segment.end else None,
+            ]
+            for segment in self.segments
+        ]
+        digest = hashlib.sha256(b"cmgr-history-lineage-v1\0")
+        digest.update(json.dumps(bindings, separators=(",", ":")).encode("ascii"))
+        digest.update(b"\0")
+        for raw in self.iter_records():
+            digest.update(raw)
+        return digest.hexdigest()
 
     def iter_records(self) -> Iterator[bytes]:
         """Yield root metadata plus exact contributing records, omitting ancestor metadata.

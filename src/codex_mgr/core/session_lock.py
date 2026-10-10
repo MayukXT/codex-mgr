@@ -3,21 +3,33 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+import stat
+from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from codex_mgr.core.rollouts import canonical_session_id
-from codex_mgr.utils.files import FileConflictError, mutation_lock
+from codex_mgr.utils.files import FileConflictError, is_linked_path, mutation_lock
 from codex_mgr.utils.paths import get_codex_home
 
 
 @contextmanager
 def _native_lock(path: Path, *, create: bool) -> Iterator[None]:
     """Rust std::fs locks use flock on Unix and LockFileEx on Windows."""
-    flags = os.O_RDWR | (os.O_CREAT if create else 0)
+    if path.is_symlink() or (path.exists() and is_linked_path(path)):
+        raise FileConflictError("Native session lock storage is linked or unsafe.")
+    if path.exists() and not path.is_file():
+        raise FileConflictError("Native session lock storage must be a regular file.")
+    flags = (
+        os.O_RDWR
+        | (os.O_CREAT if create else 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(path, flags, 0o600)
     with os.fdopen(descriptor, "r+b") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise FileConflictError("Native session lock storage must be a regular file.")
         if os.name == "nt":
             import ctypes
             import msvcrt
@@ -85,16 +97,33 @@ def session_write_guard(session_id: str, path: Path) -> Iterator[None]:
     lock. Older clients/editors require being stopped; content checks remain
     necessary because they do not participate in this protocol.
     """
-    session_id = canonical_session_id(session_id)
+    with session_write_guards(((session_id, path),)):
+        yield
+
+
+@contextmanager
+def session_write_guards(sessions: Iterable[tuple[str, Path]]) -> Iterator[None]:
+    """Acquire one coordinator for all logical source threads and target paths.
+
+    Deduplication prevents self-conflicts for replacement rollouts. Native
+    writers and compression use the metadata thread ID, rather than a distinct
+    immutable rollout ID. Validate/encode outside this scope, then recheck
+    content inside it before snapshots/publication. Native RPCs run after exit.
+    """
+    sources = tuple((canonical_session_id(identity), path.resolve()) for identity, path in sessions)
+    if not sources:
+        raise ValueError("Choose at least one session to coordinate.")
     folder = get_codex_home() / "thread-writer-locks"
+    if folder.is_symlink() or (folder.exists() and (is_linked_path(folder) or not folder.is_dir())):
+        raise FileConflictError("Native session lock storage is linked or unsafe.")
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (
-        mutation_lock(path),
-        _native_lock(folder / ".coordination.lock", create=True),
-        ExitStack() as stack,
-    ):
-        try:
-            stack.enter_context(_native_lock(folder / f"{session_id}.lock", create=False))
-        except FileNotFoundError:
-            pass
+    with ExitStack() as stack:
+        for path in sorted({path for _, path in sources}, key=str):
+            stack.enter_context(mutation_lock(path))
+        stack.enter_context(_native_lock(folder / ".coordination.lock", create=True))
+        for identity in sorted({identity for identity, _ in sources}):
+            try:
+                stack.enter_context(_native_lock(folder / f"{identity}.lock", create=False))
+            except FileNotFoundError:
+                pass
         yield
